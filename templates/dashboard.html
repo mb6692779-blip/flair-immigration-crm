@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Dashboard</h2>
+<div class="cards">
+  <div class="card"><span>Total Clients</span><b>{{ total_clients }}</b></div>
+  <div class="card"><span>Active Clients</span><b>{{ active_clients }}</b></div>
+  <div class="card"><span>Total Leads</span><b>{{ total_leads }}</b></div>
+  <div class="card"><span>Pending Process</span><b>{{ pending_process }}</b></div>
+  <div class="card"><span>Total Revenue</span><b>{{ "%.0f"|format(money.total) }}</b></div>
+  <div class="card"><span>Pending Amount</span><b>{{ "%.0f"|format(money.pending) }}</b></div>
+</div>
+
+<div class="panel">
+  <h3>Recent Clients</h3>
+  <table>
+    <tr><th>Name</th><th>Phone</th><th>Program</th><th>Status</th><th>Remarks</th></tr>
+    {% for r in recent_clients %}
+    <tr><td>{{ r.client_name }}</td><td>{{ r.phone }}</td><td>{{ r.program }}</td><td>{{ r.status }}</td><td>{{ r.remarks }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="panel">
+  <h3>Recent Payments</h3>
+  <table>
+    <tr><th>Client</th><th>Description</th><th>Total</th><th>Received</th><th>Pending</th><th>Status</th></tr>
+    {% for r in recent_payments %}
+    <tr><td>{{ r.client_name }}</td><td>{{ r.description }}</td><td>{{ r.total_amount }}</td><td>{{ r.received_amount }}</td><td>{{ r.pending_amount }}</td><td>{{ r.payment_status }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<form action="{{ url_for('backup') }}" method="post"><button class="secondary">Download Full Backup</button></form>
+{% endblock %}

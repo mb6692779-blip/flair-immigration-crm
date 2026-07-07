@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Clients</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <input name="client_name" placeholder="Client Name" required>
+  <input name="phone" placeholder="Phone">
+  <input name="email" placeholder="Email">
+  <input name="city" placeholder="City">
+  <input name="country" placeholder="Country">
+  <input name="program" placeholder="Program">
+  <select name="status" class="client-status">
+    {% for s in CLIENT_STATUS %}<option>{{ s }}</option>{% endfor %}
+  </select>
+  <select name="inactive_reason" class="inactive-reason">
+    <option value="">Inactive Reason</option>
+    {% for s in INACTIVE_REASONS %}<option>{{ s }}</option>{% endfor %}
+  </select>
+  <textarea name="remarks" placeholder="Remarks"></textarea>
+  <button>Add Client</button>
+</form>
+</div>
+
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='clients') }}">Export CSV</a>
+<table>
+<tr><th>ID</th><th>Name</th><th>Phone</th><th>City</th><th>Country</th><th>Program</th><th>Status</th><th>Inactive Reason</th><th>Remarks</th><th>Save</th></tr>
+{% for r in rows %}
+<tr>
+<form method="post" action="{{ url_for('edit_client', id=r.id) }}">
+<td>{{ r.id }}</td>
+<td><input name="client_name" value="{{ r.client_name }}"></td>
+<td><input name="phone" value="{{ r.phone or '' }}"></td>
+<td><input name="city" value="{{ r.city or '' }}"></td>
+<td><input name="country" value="{{ r.country or '' }}"></td>
+<td><input name="program" value="{{ r.program or '' }}"></td>
+<td><select name="status" class="client-status">{% for s in CLIENT_STATUS %}<option {% if r.status==s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></td>
+<td><select name="inactive_reason" class="inactive-reason"><option value="">Select</option>{% for s in INACTIVE_REASONS %}<option {% if r.inactive_reason==s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></td>
+<td><textarea name="remarks">{{ r.remarks or '' }}</textarea></td>
+<td><button>Save</button></td>
+</form>
+</tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

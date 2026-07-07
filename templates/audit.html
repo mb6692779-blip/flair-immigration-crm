@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Audit Logs</h2>
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='audit_log') }}">Export CSV</a>
+<table>
+<tr><th>ID</th><th>User</th><th>Action</th><th>Details</th><th>Date</th></tr>
+{% for r in rows %}
+<tr><td>{{ r.id }}</td><td>{{ r.username }}</td><td>{{ r.action }}</td><td>{{ r.details }}</td><td>{{ r.created_at }}</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

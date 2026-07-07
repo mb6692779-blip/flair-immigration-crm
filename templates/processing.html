@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Processing</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <select name="client_id">{% for c in clients %}<option value="{{ c.id }}">{{ c.client_name }}</option>{% endfor %}</select>
+  <input name="stage" placeholder="Stage / Requirement">
+  <select name="process_status">{% for s in PROCESS_STATUS %}<option>{{ s }}</option>{% endfor %}</select>
+  <input name="next_followup" type="date">
+  <textarea name="remarks" placeholder="Remarks"></textarea>
+  <button>Add Process</button>
+</form>
+</div>
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='processing') }}">Export CSV</a>
+<table>
+<tr><th>ID</th><th>Client</th><th>Stage</th><th>Status</th><th>Next Follow-up</th><th>Remarks</th><th>Save</th></tr>
+{% for r in rows %}
+<tr>
+<form method="post" action="{{ url_for('edit_processing', id=r.id) }}">
+<td>{{ r.id }}</td><td>{{ r.client_name }}</td>
+<td><input name="stage" value="{{ r.stage or '' }}"></td>
+<td><select name="process_status">{% for s in PROCESS_STATUS %}<option {% if r.process_status==s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></td>
+<td><input type="date" name="next_followup" value="{{ r.next_followup or '' }}"></td>
+<td><textarea name="remarks">{{ r.remarks or '' }}</textarea></td>
+<td><button>Save</button></td>
+</form>
+</tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

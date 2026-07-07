@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Lead Management</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <input name="lead_date" type="date">
+  <input name="name" placeholder="Lead Name" required>
+  <input name="phone" placeholder="Phone / WhatsApp">
+  <input name="city" placeholder="City">
+  <select name="source"><option>Facebook</option><option>Instagram</option><option>TikTok</option><option>Google</option><option>Website</option><option>Referral</option><option>Walk-in</option><option>Other</option></select>
+  <input name="country_interest" placeholder="Country Interested">
+  <input name="program_interest" placeholder="Program Interested">
+  <select name="lead_status"><option>New Lead</option><option>Contacted</option><option>Follow-up</option><option>Meeting Scheduled</option><option>Hot Lead</option><option>Cold Lead</option><option>Converted</option><option>Lost</option></select>
+  <input name="next_followup" type="date">
+  <textarea name="remarks" placeholder="Lead Remarks"></textarea>
+  <button>Add Lead</button>
+</form>
+</div>
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='leads') }}">Export CSV</a>
+<table>
+<tr><th>ID</th><th>Date</th><th>Name</th><th>Phone</th><th>City</th><th>Source</th><th>Country</th><th>Program</th><th>Status</th><th>Follow-up</th><th>Remarks</th></tr>
+{% for r in rows %}
+<tr><td>{{ r.id }}</td><td>{{ r.lead_date }}</td><td>{{ r.name }}</td><td>{{ r.phone }}</td><td>{{ r.city }}</td><td>{{ r.source }}</td><td>{{ r.country_interest }}</td><td>{{ r.program_interest }}</td><td>{{ r.lead_status }}</td><td>{{ r.next_followup }}</td><td>{{ r.remarks }}</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}
