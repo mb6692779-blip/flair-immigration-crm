@@ -1,0 +1,1 @@
+{% extends "base.html" %}{% block content %}<h2>{{ title }}</h2><div class="panel">{% if rows and rows|length %}<table><tr>{% for k in rows[0].keys() %}<th>{{ k }}</th>{% endfor %}</tr>{% for r in rows %}<tr>{% for k in r.keys() %}<td>{{ r[k] }}</td>{% endfor %}</tr>{% endfor %}</table>{% else %}<p>No records yet.</p>{% endif %}</div>{% endblock %}

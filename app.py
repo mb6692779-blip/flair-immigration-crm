@@ -357,6 +357,28 @@ def add_client():
         return redirect(url_for("processing_sheet"))
     return render_template("add_client.html")
 
+
+def allowed_client_stage(total, received_eur):
+    total=float(total or 0); rec=float(received_eur or 0)
+    if total <= 0: return "Stage 1 - 70%"
+    if rec < total*0.70: return "Stage 1 - 70%"
+    if rec < total*0.85: return "Stage 2 - 15%"
+    if rec < total: return "Stage 3 - 15%"
+    return "Complete"
+
+def allowed_share_stage(share_type,total,paid_eur):
+    total=float(total or 0); paid=float(paid_eur or 0); st=share_type or ""
+    if "Lawyer" in st or "Migration" in st:
+        if paid < total*0.70: return "Stage 1 - 70%"
+        if paid < total: return "Stage 2 - 30%"
+        return "Complete"
+    if "FS" in st:
+        if paid < total*0.70: return "Stage 1 - 70%"
+        if paid < total*0.85: return "Stage 2 - 15%"
+        if paid < total: return "Stage 3 - 15%"
+        return "Complete"
+    return "Manual Transfer"
+
 @app.route("/new-payment", methods=["GET","POST"])
 @login_required
 @accounts_or_management
@@ -378,6 +400,14 @@ def new_payment():
                     0, 0, total_eur*inv_roe, total_eur, "Pending", d.get("remarks"), d.get("updated_by"), now(), now()
                 ))
                 cp_id = con.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+            base_check = con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
+            allowed = allowed_client_stage(base_check["total_eur"], (base_check["total_eur"] or 0) - (base_check["balance_eur"] or 0))
+            if allowed != "Complete" and d.get("stage") != allowed:
+                flash(f"Stage locked. Pehle {allowed} complete karo.")
+                return redirect(url_for("new_payment"))
+            if allowed == "Complete":
+                flash("Client payment already complete.")
+                return redirect(url_for("new_payment"))
             con.execute("""INSERT INTO payment_updates(client_payment_id,payment_date,stage,received_eur,roe,received_pkr,updated_by,remarks,created_at)
             VALUES(?,?,?,?,?,?,?,?,?)""", (cp_id, d.get("payment_date"), d.get("stage"), amount_eur, roe, amount_pkr, d.get("updated_by"), d.get("remarks"), now()))
             rec = con.execute("SELECT COALESCE(SUM(received_eur),0) eur, COALESCE(SUM(received_pkr),0) pkr FROM payment_updates WHERE client_payment_id=?", (cp_id,)).fetchone()
@@ -416,6 +446,14 @@ def transfer_shares():
                     d.get("share_type"), d.get("transfer_date"), d.get("visa"), d.get("inv"), d.get("client_name"), inv_roe, total_eur, total_eur*inv_roe, 0, 0, total_eur*inv_roe, total_eur, "Pending", d.get("remarks"), d.get("updated_by"), now(), now()
                 ))
                 sp_id = con.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+            base_check = con.execute("SELECT * FROM share_payments WHERE id=?", (sp_id,)).fetchone()
+            allowed = allowed_share_stage(base_check["share_type"], base_check["total_share"], (base_check["total_share"] or 0) - (base_check["balance_eur"] or 0))
+            if allowed != "Complete" and d.get("stage") != allowed:
+                flash(f"Stage locked. Pehle {allowed} complete karo.")
+                return redirect(url_for("transfer_shares"))
+            if allowed == "Complete":
+                flash("Share payment already complete.")
+                return redirect(url_for("transfer_shares"))
             con.execute("""INSERT INTO share_updates(share_payment_id,transfer_date,stage,transfer_eur,roe,transfer_pkr,updated_by,remarks,created_at)
             VALUES(?,?,?,?,?,?,?,?,?)""", (sp_id, d.get("transfer_date"), d.get("stage"), transfer_eur, roe, transfer_pkr, d.get("updated_by"), d.get("remarks"), now()))
             rec = con.execute("SELECT COALESCE(SUM(transfer_eur),0) eur, COALESCE(SUM(transfer_pkr),0) pkr FROM share_updates WHERE share_payment_id=?", (sp_id,)).fetchone()
@@ -463,6 +501,41 @@ def payments_sheet():
         lawyer = con.execute("SELECT * FROM share_payments WHERE share_type LIKE '%Lawyer%' OR share_type LIKE '%Migration%' ORDER BY id").fetchall()
         other = con.execute("SELECT * FROM share_payments WHERE share_type NOT LIKE '%FS%' AND share_type NOT LIKE '%Lawyer%' AND share_type NOT LIKE '%Migration%' ORDER BY share_type,id").fetchall()
     return render_template("payments_sheet.html", payments=payments, fs=fs, lawyer=lawyer, other=other)
+
+
+@app.route("/add-work", methods=["GET","POST"])
+@login_required
+@management_required
+def add_work():
+    return render_template("simple_table.html", title="Add New Work", rows=[])
+
+@app.get("/client-master")
+@login_required
+@management_required
+def client_master():
+    with db() as con:
+        rows=con.execute("SELECT * FROM clients ORDER BY id DESC").fetchall()
+    return render_template("simple_table.html", title="Client Master", rows=rows)
+
+@app.get("/marketing-work")
+@login_required
+@management_required
+def marketing_work():
+    return render_template("simple_table.html", title="Marketing Work", rows=[])
+
+@app.get("/all-work-tasks")
+@login_required
+@management_required
+def all_work_tasks():
+    return render_template("simple_table.html", title="All Work Tasks", rows=[])
+
+@app.get("/payment-history")
+@login_required
+@accounts_or_management
+def payment_history():
+    with db() as con:
+        rows=con.execute("SELECT * FROM payment_updates ORDER BY id DESC").fetchall()
+    return render_template("simple_table.html", title="Payment History", rows=rows)
 
 @app.get("/export/<table>")
 @login_required
