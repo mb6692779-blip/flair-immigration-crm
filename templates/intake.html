@@ -2,6 +2,7 @@
 {% block content %}
 <h2>Client Intake</h2>
 <div class="panel">
+<p class="notice">Date automatically save ho jayegi. Single client mein one name, Group mein main investor + partner names boxes automatically open honge.</p>
 <form method="post" class="gridForm">
   <select name="visa_type">
     {% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}
@@ -13,10 +14,18 @@
   <input name="main_investor" placeholder="Main Investor / Client Name" required>
   <div id="partnerBoxes" class="full"></div>
 
-  <select name="reference_status" onchange="toggleByValue(this,'referenceBox','Yes')">
+  <select name="reference_status" onchange="toggleByValue(this,'referenceDetails','Yes')">
     <option>No</option><option>Yes</option>
   </select>
-  <input name="reference_name" id="referenceBox" placeholder="Reference Name" style="display:none">
+  <div id="referenceDetails" class="full" style="display:none">
+    <select name="reference_type" onchange="showReferenceInputs(this.value)">
+      {% for r in REFERENCE_TYPES %}<option>{{ r }}</option>{% endfor %}
+    </select>
+    <input name="partner_office_name" id="refPartnerOffice" placeholder="Partner Office Name" style="display:none;margin-top:8px">
+    <input name="director_name" id="refDirector" placeholder="Director Name" style="display:none;margin-top:8px">
+    <input name="other_reference" id="refOther" placeholder="Other Reference Detail" style="display:none;margin-top:8px">
+    <input name="reference_name" placeholder="Reference Person Name" style="margin-top:8px">
+  </div>
 
   <select name="issue_status" onchange="toggleByValue(this,'issueBox','Yes')">
     <option>No</option><option>Yes</option>
@@ -35,9 +44,17 @@
 <tr><th>Date</th><th>Visa</th><th>Section</th><th>Group</th><th>Main Investor</th><th>Partners</th><th>Reference</th><th>Issue</th><th>Status</th><th>Remarks</th></tr>
 {% for r in rows %}
 <tr>
-<td>{{ r.created_at }}</td><td>{{ r.visa_type }}</td><td>{{ r.section_type }}</td><td>{{ r.group_size }}</td><td>{{ r.main_investor }}</td><td>{{ r.partner_names }}</td><td>{{ r.reference_name }}</td><td>{{ r.issue_details }}</td><td>{{ r.status }}</td><td>{{ r.final_remarks }}</td>
+<td>{{ r.created_at }}</td><td>{{ r.visa_type }}</td><td>{{ r.section_type }}</td><td>{{ r.group_size }}</td><td>{{ r.main_investor }}</td><td>{{ r.partner_names }}</td><td>{{ r.reference_type }} {{ r.reference_name }} {{ r.partner_office_name }} {{ r.director_name }} {{ r.other_reference }}</td><td>{{ r.issue_details }}</td><td>{{ r.status }}</td><td>{{ r.final_remarks }}</td>
 </tr>
 {% endfor %}
 </table>
 </div>
+<script>
+function showReferenceInputs(v){
+  ["refPartnerOffice","refDirector","refOther"].forEach(id=>document.getElementById(id).style.display="none");
+  if(v==="Partner Office") document.getElementById("refPartnerOffice").style.display="block";
+  if(v==="Director") document.getElementById("refDirector").style.display="block";
+  if(v==="Other") document.getElementById("refOther").style.display="block";
+}
+</script>
 {% endblock %}

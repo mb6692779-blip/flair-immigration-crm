@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Dashboard</h2>
+<div class="heroDashboard">
+  <div>
+    <p class="eyebrow">FLAIR INTERNATIONAL IMMIGRATION CRM</p>
+    <h2>Management Command Dashboard</h2>
+    <p>Clients, payments, visa processing, back office work, marketing and accounts updates in one secure workspace.</p>
+  </div>
+  <div class="heroCardMini">
+    <b>{{ active_clients }}</b>
+    <span>Active Clients</span>
+  </div>
+</div>
+
 <div class="cards">
   <div class="card"><span>Total Clients</span><b>{{ total_clients }}</b></div>
   <div class="card"><span>Active Clients</span><b>{{ active_clients }}</b></div>

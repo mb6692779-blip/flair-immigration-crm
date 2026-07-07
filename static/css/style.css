@@ -57,3 +57,25 @@ td input,td select,td textarea{font-size:12px;padding:7px}
 }
 
 .full{grid-column:1/-1}.green{color:#15803d}.red{color:#dc2626}
+
+.heroDashboard{
+  background:
+    linear-gradient(135deg,rgba(15,23,42,.94),rgba(37,99,235,.76)),
+    url("https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1400&q=80");
+  background-size:cover;
+  background-position:center;
+  color:#fff;
+  padding:34px;
+  border-radius:28px;
+  margin-bottom:20px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  box-shadow:0 18px 45px rgba(15,23,42,.28);
+}
+.heroDashboard h2{font-size:38px;margin:6px 0}
+.heroDashboard p{max-width:720px;color:#dbeafe}
+.eyebrow{letter-spacing:3px;font-weight:900;color:#93c5fd}
+.heroCardMini{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25);padding:22px;border-radius:22px;text-align:center;min-width:170px}
+.heroCardMini b{display:block;font-size:46px}.heroCardMini span{font-weight:900;color:#dbeafe}
+.notice{background:#eff6ff;border-left:5px solid #2563eb;padding:12px;border-radius:12px;color:#1e3a8a}

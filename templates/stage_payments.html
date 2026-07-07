@@ -1,38 +1,75 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Payment Stages</h2>
+<h2>Payments / Accounts Sheet</h2>
+
 <div class="panel">
+<h3>Create Client Payment Account</h3>
 <form method="post" class="gridForm">
+  <input type="hidden" name="action" value="new_account">
   <input name="client_name" list="clientList" placeholder="Client Name" required>
-  <datalist id="clientList">{% for c in clients %}<option value="{{ c.client_name }}">{{ c.program }}</option>{% endfor %}</datalist>
+  <datalist id="clientList">{% for c in old_clients %}<option value="{{ c.client_name }}">{{ c.program }}</option>{% endfor %}</datalist>
   <select name="visa_type">{% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}</select>
-  <input name="total_payment" type="number" step="0.01" placeholder="Total Payment">
-  <input name="stage1_received" type="number" step="0.01" placeholder="Stage 1 Received (70%)">
-  <textarea name="stage1_remarks" placeholder="Stage 1 Remarks if not complete"></textarea>
-  <input name="stage2_received" type="number" step="0.01" placeholder="Stage 2 Received (15%)">
-  <textarea name="stage2_remarks" placeholder="Stage 2 Remarks if not complete"></textarea>
-  <input name="stage3_received" type="number" step="0.01" placeholder="Stage 3 Received (15%)">
-  <textarea name="stage3_remarks" placeholder="Stage 3 Remarks if not complete"></textarea>
-  <select name="sheet_updated"><option>No</option><option>Yes</option></select>
-  <textarea name="process_remarks" placeholder="Manual remarks: current visa process stage"></textarea>
-  <button>Add Payment Stage</button>
+  <input name="inv" placeholder="Invoice No. e.g MIG-70">
+  <input name="total_eur" type="number" step="0.01" placeholder="Total Payment EUR" required>
+  <input name="invoice_roe" type="number" step="0.01" placeholder="Invoice ROE" required>
+  <button>Create Payment Account</button>
 </form>
 </div>
 
 <div class="panel">
-<a class="export" href="{{ url_for('export_table', table='payment_stages') }}">Export CSV</a>
+<h3>Add New Received Payment</h3>
+<form method="post" class="gridForm">
+  <input type="hidden" name="action" value="payment_update">
+  <select name="payment_account_id" required>
+    {% for a in accounts %}
+      <option value="{{ a.id }}">{{ a.client_name }} | {{ a.visa_type }} | Total EUR {{ a.total_eur }}</option>
+    {% endfor %}
+  </select>
+  <input name="payment_date" type="date">
+  <select name="payment_stage">{% for s in PAYMENT_STAGES_NEW %}<option>{{ s }}</option>{% endfor %}</select>
+  <input name="received_eur" type="number" step="0.01" placeholder="Received EUR">
+  <input name="roe" type="number" step="0.01" placeholder="ROE">
+  <input name="updated_by" placeholder="Updated By / Accounts Person Name" required>
+  <textarea name="remarks" placeholder="Remarks if payment is incomplete or any note"></textarea>
+  <button>Add Payment Update</button>
+</form>
+</div>
+
+<div class="panel">
+<h3>Client Payment Summary</h3>
 <table>
-<tr><th>Client</th><th>Visa</th><th>Total</th><th>70% Required</th><th>70% Received</th><th>Status</th><th>15% Required</th><th>15% Received</th><th>Status</th><th>15% Required</th><th>15% Received</th><th>Status</th><th>Sheet Updated</th><th>Action</th><th>Remarks</th></tr>
-{% for r in rows %}
 <tr>
-<td>{{ r.client_name }}</td><td>{{ r.visa_type }}</td><td>{{ r.total_payment }}</td>
-<td>{{ r.stage1_required }}</td><td>{{ r.stage1_received }}</td><td>{{ r.stage1_status }}<br>{{ r.stage1_remarks }}</td>
-<td>{{ r.stage2_required }}</td><td>{{ r.stage2_received }}</td><td>{{ r.stage2_status }}<br>{{ r.stage2_remarks }}</td>
-<td>{{ r.stage3_required }}</td><td>{{ r.stage3_received }}</td><td>{{ r.stage3_status }}<br>{{ r.stage3_remarks }}</td>
-<td>{% if r.sheet_updated=='Yes' %}<b class="green">Done</b>{% else %}<b class="red">Pending Sheet Update</b>{% endif %}</td>
-<td>{% if r.sheet_updated!='Yes' %}<form method="post" action="{{ url_for('mark_payment_sheet', id=r.id) }}"><button>Mark Done</button></form>{% endif %}</td>
-<td>{{ r.process_remarks }}</td>
+<th>Client</th><th>Visa</th><th>INV</th><th>Total EUR</th><th>Invoice PKR</th>
+<th>Received EUR</th><th>Received PKR</th><th>%</th><th>Balance EUR</th><th>Balance PKR</th>
+<th>Stage 1 70%</th><th>Stage 2 15%</th><th>Stage 3 15%</th><th>Status</th>
 </tr>
+{% for s in summaries %}
+<tr>
+<td>{{ s.account.client_name }}</td>
+<td>{{ s.account.visa_type }}</td>
+<td>{{ s.account.inv }}</td>
+<td>{{ "%.2f"|format(s.account.total_eur or 0) }}</td>
+<td>{{ "%.0f"|format(s.account.invoice_pkr or 0) }}</td>
+<td>{{ "%.2f"|format(s.total_received_eur) }}</td>
+<td>{{ "%.0f"|format(s.total_received_pkr) }}</td>
+<td>{{ s.percent }}%</td>
+<td><b class="red">{{ "%.2f"|format(s.balance_eur) }}</b></td>
+<td><b class="red">{{ "%.0f"|format(s.balance_pkr) }}</b></td>
+<td>{{ "%.2f"|format(s.stage_received["Stage 1 - 70%"]) }} / {{ "%.2f"|format(s.req1) }}<br><b class="{{ 'green' if s.st1=='Complete' else 'red' }}">{{ s.st1 }}</b></td>
+<td>{{ "%.2f"|format(s.stage_received["Stage 2 - 15%"]) }} / {{ "%.2f"|format(s.req2) }}<br><b class="{{ 'green' if s.st2=='Complete' else 'red' }}">{{ s.st2 }}</b></td>
+<td>{{ "%.2f"|format(s.stage_received["Stage 3 - 15%"]) }} / {{ "%.2f"|format(s.req3) }}<br><b class="{{ 'green' if s.st3=='Complete' else 'red' }}">{{ s.st3 }}</b></td>
+<td>{% if s.balance_eur <= 0 %}<b class="green">Complete</b>{% else %}<b class="red">Pending</b>{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+
+<div class="panel">
+<h3>Payment Update History</h3>
+<table>
+<tr><th>Date</th><th>Client</th><th>Stage</th><th>EUR</th><th>ROE</th><th>PKR</th><th>Updated By</th><th>Remarks</th></tr>
+{% for u in updates %}
+<tr><td>{{ u.payment_date }}</td><td>{{ u.client_name }}</td><td>{{ u.payment_stage }}</td><td>{{ u.received_eur }}</td><td>{{ u.roe }}</td><td>{{ u.received_pkr }}</td><td>{{ u.updated_by }}</td><td>{{ u.remarks }}</td></tr>
 {% endfor %}
 </table>
 </div>

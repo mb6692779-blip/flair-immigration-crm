@@ -24,6 +24,8 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key-in-railway")
 
 PAYMENT_STATUS = ["Pending", "Partial", "Received", "Refunded", "Cancelled"]
+PAYMENT_STAGES_NEW = ["Stage 1 - 70%", "Stage 2 - 15%", "Stage 3 - 15%"]
+REFERENCE_TYPES = ["Self", "Partner Office", "Director", "Walk-in", "Other"]
 CLIENT_STATUS = ["Active", "Inactive"]
 PROCESS_STATUS = [
     "Pending", "In Progress", "Waiting Documents", "Appointment Booked",
@@ -130,6 +132,10 @@ def init_db():
             main_investor TEXT,
             partner_names TEXT,
             reference_status TEXT,
+            reference_type TEXT,
+            partner_office_name TEXT,
+            director_name TEXT,
+            other_reference TEXT,
             reference_name TEXT,
             issue_status TEXT,
             issue_details TEXT,
@@ -233,6 +239,32 @@ def init_db():
             post_remarks TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS payment_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name TEXT NOT NULL,
+            visa_type TEXT,
+            inv TEXT,
+            total_eur REAL DEFAULT 0,
+            invoice_roe REAL DEFAULT 0,
+            invoice_pkr REAL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS payment_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_account_id INTEGER NOT NULL,
+            payment_date TEXT,
+            payment_stage TEXT,
+            received_eur REAL DEFAULT 0,
+            roe REAL DEFAULT 0,
+            received_pkr REAL DEFAULT 0,
+            updated_by TEXT,
+            remarks TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(payment_account_id) REFERENCES payment_accounts(id)
         );
 
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -441,6 +473,8 @@ def inject_globals():
         WORK_STATUS=WORK_STATUS,
         MARKETING_TOPICS=MARKETING_TOPICS,
         CONTENT_STATUS=CONTENT_STATUS,
+        PAYMENT_STAGES_NEW=PAYMENT_STAGES_NEW,
+        REFERENCE_TYPES=REFERENCE_TYPES,
     )
 
 @app.route("/login", methods=["GET", "POST"])
@@ -643,12 +677,13 @@ def intake():
                 partners.append(val)
         with db() as con:
             con.execute("""
-                INSERT INTO client_intake(visa_type,section_type,group_size,main_investor,partner_names,reference_status,reference_name,issue_status,issue_details,final_remarks,status,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO client_intake(visa_type,section_type,group_size,main_investor,partner_names,reference_status,reference_type,partner_office_name,director_name,other_reference,reference_name,issue_status,issue_details,final_remarks,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 data.get("visa_type"), data.get("section_type"), group_size, data.get("main_investor"),
-                json.dumps(partners, ensure_ascii=False), data.get("reference_status"), data.get("reference_name"),
-                data.get("issue_status"), data.get("issue_details"), data.get("final_remarks"), data.get("status","Active"), now, now
+                json.dumps(partners, ensure_ascii=False), data.get("reference_status"), data.get("reference_type"),
+                data.get("partner_office_name"), data.get("director_name"), data.get("other_reference"),
+                data.get("reference_name"), data.get("issue_status"), data.get("issue_details"), data.get("final_remarks"), data.get("status","Active"), now, now
             ))
 
             # Also create main client record if not exists.
@@ -669,6 +704,7 @@ def intake():
     return render_template("intake.html", rows=rows)
 
 
+
 @app.route("/stage-payments", methods=["GET", "POST"])
 @login_required
 @accounts_or_management
@@ -676,45 +712,87 @@ def stage_payments():
     if request.method == "POST":
         now = datetime.now().isoformat(timespec="seconds")
         data = request.form
-        total = float(data.get("total_payment") or 0)
-        s1_req, s2_req, s3_req = total * 0.70, total * 0.15, total * 0.15
-        s1_rec = float(data.get("stage1_received") or 0)
-        s2_rec = float(data.get("stage2_received") or 0)
-        s3_rec = float(data.get("stage3_received") or 0)
+        action = data.get("action", "payment_update")
 
-        def status(rec, req):
-            return "Complete" if req and rec >= req else "Pending"
+        def num(v):
+            try:
+                return float(str(v or "0").replace(",", ""))
+            except Exception:
+                return 0.0
 
         with db() as con:
+            if action == "new_account":
+                total_eur = num(data.get("total_eur"))
+                invoice_roe = num(data.get("invoice_roe"))
+                invoice_pkr = total_eur * invoice_roe
+                con.execute("""
+                    INSERT INTO payment_accounts(client_name, visa_type, inv, total_eur, invoice_roe, invoice_pkr, created_at, updated_at)
+                    VALUES(?,?,?,?,?,?,?,?)
+                """, (
+                    data.get("client_name"), data.get("visa_type"), data.get("inv"),
+                    total_eur, invoice_roe, invoice_pkr, now, now
+                ))
+                con.commit()
+                audit("payment_account_created", data.get("client_name",""))
+                return redirect(url_for("stage_payments"))
+
+            account_id = data.get("payment_account_id")
+            stage = data.get("payment_stage")
+            received_eur = num(data.get("received_eur"))
+            roe = num(data.get("roe"))
+            received_pkr = received_eur * roe
+            updated_by = data.get("updated_by") or session.get("name") or session.get("username")
             con.execute("""
-                INSERT INTO payment_stages(client_name,visa_type,total_payment,stage1_required,stage1_received,stage1_status,stage1_remarks,stage2_required,stage2_received,stage2_status,stage2_remarks,stage3_required,stage3_received,stage3_status,stage3_remarks,process_remarks,sheet_updated,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO payment_updates(payment_account_id,payment_date,payment_stage,received_eur,roe,received_pkr,updated_by,remarks,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
             """, (
-                data.get("client_name"), data.get("visa_type"), total,
-                s1_req, s1_rec, status(s1_rec, s1_req), data.get("stage1_remarks"),
-                s2_req, s2_rec, status(s2_rec, s2_req), data.get("stage2_remarks"),
-                s3_req, s3_rec, status(s3_rec, s3_req), data.get("stage3_remarks"),
-                data.get("process_remarks"), data.get("sheet_updated","No"), now, now
+                account_id, data.get("payment_date"), stage, received_eur, roe,
+                received_pkr, updated_by, data.get("remarks"), now
             ))
+            con.execute("UPDATE payment_accounts SET updated_at=? WHERE id=?", (now, account_id))
             con.commit()
-        audit("stage_payment_added", data.get("client_name",""))
+            audit("payment_updated_by_accounts", f"{account_id} | {stage} | {updated_by}")
         return redirect(url_for("stage_payments"))
 
     with db() as con:
-        rows = con.execute("SELECT * FROM payment_stages ORDER BY id DESC").fetchall()
-        clients = con.execute("SELECT client_name, program FROM clients ORDER BY client_name").fetchall()
-    return render_template("stage_payments.html", rows=rows, clients=clients)
+        accounts = con.execute("SELECT * FROM payment_accounts ORDER BY id DESC").fetchall()
+        updates = con.execute("SELECT u.*, a.client_name FROM payment_updates u JOIN payment_accounts a ON a.id=u.payment_account_id ORDER BY u.id DESC").fetchall()
+        old_clients = con.execute("SELECT client_name, program FROM clients ORDER BY client_name").fetchall()
 
+    summaries = []
+    for a in accounts:
+        acc_updates = [u for u in updates if u["payment_account_id"] == a["id"]]
+        stage_received = {"Stage 1 - 70%": 0.0, "Stage 2 - 15%": 0.0, "Stage 3 - 15%": 0.0}
+        total_received_eur = 0.0
+        total_received_pkr = 0.0
+        for u in acc_updates:
+            stage_received[u["payment_stage"]] = stage_received.get(u["payment_stage"], 0.0) + (u["received_eur"] or 0)
+            total_received_eur += u["received_eur"] or 0
+            total_received_pkr += u["received_pkr"] or 0
 
-@app.post("/stage-payments/<int:id>/sheet")
-@login_required
-@accounts_or_management
-def mark_payment_sheet(id):
-    with db() as con:
-        con.execute("UPDATE payment_stages SET sheet_updated='Yes', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), id))
-        con.commit()
-    audit("payment_sheet_updated", str(id))
-    return redirect(url_for("stage_payments"))
+        total_eur = a["total_eur"] or 0
+        balance_eur = max(total_eur - total_received_eur, 0)
+        invoice_pkr = a["invoice_pkr"] or 0
+        balance_pkr = max(invoice_pkr - total_received_pkr, 0)
+        percent = round((total_received_eur / total_eur * 100), 2) if total_eur else 0
+
+        req1, req2, req3 = total_eur * .70, total_eur * .15, total_eur * .15
+        summaries.append({
+            "account": a,
+            "updates": acc_updates,
+            "stage_received": stage_received,
+            "req1": req1, "req2": req2, "req3": req3,
+            "st1": "Complete" if stage_received.get("Stage 1 - 70%",0) >= req1 and req1 else "Pending",
+            "st2": "Complete" if stage_received.get("Stage 2 - 15%",0) >= req2 and req2 else "Pending",
+            "st3": "Complete" if stage_received.get("Stage 3 - 15%",0) >= req3 and req3 else "Pending",
+            "total_received_eur": total_received_eur,
+            "total_received_pkr": total_received_pkr,
+            "balance_eur": balance_eur,
+            "balance_pkr": balance_pkr,
+            "percent": percent
+        })
+
+    return render_template("stage_payments.html", summaries=summaries, accounts=accounts, updates=updates, old_clients=old_clients)
 
 
 @app.route("/shares", methods=["GET", "POST"])
