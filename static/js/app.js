@@ -1,36 +1,4 @@
-function updateInactiveFields(){
-  document.querySelectorAll(".client-status").forEach(sel=>{
-    const form = sel.closest("form") || sel.closest("tr");
-    if(!form) return;
-    const reason = form.querySelector(".inactive-reason");
-    if(reason){
-      reason.style.display = sel.value === "Inactive" ? "block" : "none";
-    }
-  });
-}
-document.addEventListener("change", e=>{
-  if(e.target.classList.contains("client-status")) updateInactiveFields();
-});
-window.addEventListener("load", updateInactiveFields);
-
-function buildPartnerBoxes(){
-  const type = document.getElementById("sectionType");
-  const size = document.getElementById("groupSize");
-  const box = document.getElementById("partnerBoxes");
-  if(!type || !size || !box) return;
-  let n = parseInt(size.value || "1", 10);
-  box.innerHTML = "";
-  if(type.value !== "Group" || n <= 1) return;
-  for(let i=1; i<n; i++){
-    const input = document.createElement("input");
-    input.name = "partner_" + i;
-    input.placeholder = "Partner Name " + i;
-    input.style.marginBottom = "8px";
-    box.appendChild(input);
-  }
-}
-function toggleByValue(sel, targetId, value){
-  const target = document.getElementById(targetId);
-  if(target) target.style.display = sel.value === value ? "block" : "none";
-}
-window.addEventListener("load", buildPartnerBoxes);
+function buildPartnerBoxes(){const type=document.getElementById("sectionType"),size=document.getElementById("groupSize"),box=document.getElementById("partnerBoxes");if(!type||!size||!box)return;let n=parseInt(size.value||"1");box.innerHTML="";if(type.value!=="Group"||n<=1)return;for(let i=1;i<n;i++){let input=document.createElement("input");input.name="partner_"+i;input.placeholder="Partner Name "+i;input.style.marginBottom="8px";box.appendChild(input);}}
+function toggleByValue(sel,id,val){let x=document.getElementById(id);if(x)x.style.display=sel.value===val?"block":"none";}
+function showReferenceInputs(v){["partnerOffice","directorName"].forEach(id=>{let e=document.getElementById(id);if(e)e.style.display="none";});if(v==="Partner Office")document.getElementById("partnerOffice").style.display="block";if(v==="Director")document.getElementById("directorName").style.display="block";}
+window.addEventListener("load",buildPartnerBoxes);

@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% block content %}<h2>New Payment</h2>
+<div class="panel"><h3>Create New Client Payment Account</h3><form method="post" class="gridForm">
+<input type="hidden" name="mode" value="create">
+<input name="payment_date" type="date"><input name="client_name" list="clientList" placeholder="Client Name" required>
+<datalist id="clientList">{% for c in clients %}<option value="{{ c.main_investor }}">{{ c.visa_type }}</option>{% endfor %}</datalist>
+<select name="visa">{% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}</select>
+<input name="inv" placeholder="Invoice No">
+<input name="total_eur" type="number" step="0.01" placeholder="Total EUR">
+<input name="invoice_roe" type="number" step="0.01" placeholder="Invoice ROE">
+<input name="updated_by" placeholder="Accounts Person Name">
+<textarea name="remarks" placeholder="Remarks"></textarea><button>Create</button></form></div>
+<div class="panel"><h3>Add Received Payment</h3><form method="post" class="gridForm">
+<input type="hidden" name="mode" value="update"><select name="client_payment_id">{% for a in accounts %}<option value="{{ a.id }}">{{ a.client_name }} | {{ a.visa }} | Balance EUR {{ "%.2f"|format(a.balance_eur or 0) }} | Balance PKR {{ "%.0f"|format(a.balance_pkr or 0) }}</option>{% endfor %}</select>
+<input name="payment_date" type="date"><select name="stage">{% for s in PAYMENT_STAGES %}<option>{{ s }}</option>{% endfor %}</select><input name="received_eur" type="number" step="0.01" placeholder="Received EUR"><input name="roe" type="number" step="0.01" placeholder="ROE"><input name="updated_by" placeholder="Accounts Person Name" required><textarea name="remarks" placeholder="Remarks if incomplete / note"></textarea><button>Add Payment</button></form></div>{% endblock %}

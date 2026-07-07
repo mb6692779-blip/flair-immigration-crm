@@ -1,44 +1,12 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="heroDashboard">
-  <div>
-    <p class="eyebrow">FLAIR INTERNATIONAL IMMIGRATION CRM</p>
-    <h2>Management Command Dashboard</h2>
-    <p>Clients, payments, visa processing, back office work, marketing and accounts updates in one secure workspace.</p>
-  </div>
-  <div class="heroCardMini">
-    <b>{{ active_clients }}</b>
-    <span>Active Clients</span>
-  </div>
-</div>
-
-<div class="cards">
-  <div class="card"><span>Total Clients</span><b>{{ total_clients }}</b></div>
-  <div class="card"><span>Active Clients</span><b>{{ active_clients }}</b></div>
-  <div class="card"><span>Total Leads</span><b>{{ total_leads }}</b></div>
-  <div class="card"><span>Pending Process</span><b>{{ pending_process }}</b></div>
-  <div class="card"><span>Total Revenue</span><b>{{ "%.0f"|format(money.total) }}</b></div>
-  <div class="card"><span>Pending Amount</span><b>{{ "%.0f"|format(money.pending) }}</b></div>
-</div>
-
-<div class="panel">
-  <h3>Recent Clients</h3>
-  <table>
-    <tr><th>Name</th><th>Phone</th><th>Program</th><th>Status</th><th>Remarks</th></tr>
-    {% for r in recent_clients %}
-    <tr><td>{{ r.client_name }}</td><td>{{ r.phone }}</td><td>{{ r.program }}</td><td>{{ r.status }}</td><td>{{ r.remarks }}</td></tr>
-    {% endfor %}
-  </table>
-</div>
-
-<div class="panel">
-  <h3>Recent Payments</h3>
-  <table>
-    <tr><th>Client</th><th>Description</th><th>Total</th><th>Received</th><th>Pending</th><th>Status</th></tr>
-    {% for r in recent_payments %}
-    <tr><td>{{ r.client_name }}</td><td>{{ r.description }}</td><td>{{ r.total_amount }}</td><td>{{ r.received_amount }}</td><td>{{ r.pending_amount }}</td><td>{{ r.payment_status }}</td></tr>
-    {% endfor %}
-  </table>
-</div>
-<form action="{{ url_for('backup') }}" method="post"><button class="secondary">Download Full Backup</button></form>
+{% extends "base.html" %}{% block content %}
+<div class="hero"><h2>Client Search Dashboard</h2><p>Client ka naam search karo: payment, processing, FS Lisbon, Migration Lawyer aur other partner share sab ek jagah show hoga.</p>
+<form method="get" class="search"><input name="q" value="{{ q }}" placeholder="Search client name..." autofocus><button>Search</button></form></div>
+<div class="cards"><div class="card"><span>Total Clients</span><b>{{ totals.clients }}</b></div><div class="card"><span>Invoice PKR</span><b>{{ "%.0f"|format(p.invoice) }}</b></div><div class="card"><span>Received PKR</span><b>{{ "%.0f"|format(p.received) }}</b></div><div class="card"><span>Balance PKR</span><b>{{ "%.0f"|format(p.balance) }}</b></div><div class="card"><span>Pending Process</span><b>{{ pending_proc }}</b></div></div>
+{% if summary %}
+<div class="panel"><h3>Search Result: {{ q }}</h3>
+<h4>Processing</h4><table><tr><th>Client</th><th>Program</th><th>NIF</th><th>Personal Bank</th><th>Company</th><th>Formation</th><th>Company Bank</th><th>Business Plan</th><th>Funds</th><th>Application</th><th>Decision</th><th>Status</th><th>Delay</th><th>Remarks</th></tr>{% for r in summary.processing %}<tr><td>{{ r.client_name }}</td><td>{{ r.program }}</td><td>{{ r.nif }}</td><td>{{ r.personal_bank_account }}</td><td>{{ r.company_name }}</td><td>{{ r.company_formation }}</td><td>{{ r.company_bank_account }}</td><td>{{ r.business_plan }}</td><td>{{ r.funds_transfer }}</td><td>{{ r.application_submission }}</td><td>{{ r.decision }}</td><td>{{ r.status }}</td><td>{{ r.delay }}</td><td>{{ r.remarks }}</td></tr>{% endfor %}</table>
+<h4>Client Payments</h4><table><tr><th>Client</th><th>Visa</th><th>INV</th><th>Total EUR</th><th>Invoice PKR</th><th>Received PKR</th><th>%</th><th>Balance PKR</th><th>Balance EUR</th><th>Stage</th><th>Updated By</th></tr>{% for r in summary.payments %}<tr><td>{{ r.client_name }}</td><td>{{ r.visa }}</td><td>{{ r.inv }}</td><td>{{ r.total_eur }}</td><td>{{ r.invoice_pkr }}</td><td>{{ r.received_pkr }}</td><td>{{ "%.1f"|format(r.received_percent or 0) }}%</td><td>{{ r.balance_pkr }}</td><td>{{ r.balance_eur }}</td><td>{{ r.payment_stage }}</td><td>{{ r.updated_by }}</td></tr>{% endfor %}</table>
+<h4>Shares</h4><table><tr><th>Type</th><th>Client</th><th>Total EUR</th><th>Total PKR</th><th>Paid PKR</th><th>%</th><th>Balance PKR</th><th>Balance EUR</th><th>Status</th></tr>{% for r in summary.shares %}<tr><td>{{ r.share_type }}</td><td>{{ r.client_name }}</td><td>{{ r.total_eur }}</td><td>{{ r.total_pkr }}</td><td>{{ r.paid_pkr }}</td><td>{{ "%.1f"|format(r.paid_percent or 0) }}%</td><td>{{ r.balance_pkr }}</td><td>{{ r.balance_eur }}</td><td>{{ r.status }}</td></tr>{% endfor %}</table>
+</div>{% endif %}
+<form method="post" action="{{ url_for('backup') }}"><button class="secondary">Download Server Backup</button></form>
 {% endblock %}

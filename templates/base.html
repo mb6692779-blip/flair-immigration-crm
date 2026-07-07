@@ -1,56 +1,17 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Flair International CRM</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flair CRM</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"></head>
 <body>
-<div class="topbar">
-  <div class="brand">
-    <img class="topLogo" src="{{ url_for('static', filename='images/flair-logo.png') }}" alt="Flair International Logo">
-    <div>
-      <h1>Flair International CRM</h1>
-      <p>Immigration Operations & Accounts System</p>
-    </div>
-  </div>
-  <div class="userbox">
-    <b>{{ name }}</b><span>{{ role|upper }}</span>
-    <a href="{{ url_for('logout') }}">Logout</a>
-  </div>
-</div>
-
-<div class="layout">
-  <aside class="sidebar">
-    {% if role == 'management' %}
-    <a href="{{ url_for('dashboard') }}">Dashboard</a>
-    <a href="{{ url_for('intake') }}">Client Intake</a>
-    <a href="{{ url_for('clients') }}">Clients</a>
-    <a href="{{ url_for('stage_payments') }}">Payment Stages</a>
-    <a href="{{ url_for('shares') }}">Shares</a>
-    <a href="{{ url_for('visa_updates') }}">Visa Updates</a>
-    <a href="{{ url_for('processing') }}">Processing</a>
-    <a href="{{ url_for('backoffice_work') }}">Back Office Work</a>
-    <a href="{{ url_for('marketing_work') }}">Marketing / IT</a>
-    <a href="{{ url_for('leads') }}">Leads</a>
-    <a href="{{ url_for('payments') }}">Payments Old</a>
-    <a href="{{ url_for('audit_page') }}">Audit Logs</a>
-    {% elif role == 'accounts' %}
-    <a href="{{ url_for('stage_payments') }}">Payment Stages</a>
-    <a href="{{ url_for('shares') }}">Shares</a>
-    <a href="{{ url_for('payments') }}">Payments Old</a>
-    {% endif %}
-  </aside>
-  <main class="main">
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        <div class="flash">{{ messages[0] }}</div>
-      {% endif %}
-    {% endwith %}
-    {% block content %}{% endblock %}
-  </main>
-</div>
-<script src="{{ url_for('static', filename='js/app.js') }}"></script>
-</body>
-</html>
+<header class="topbar"><div class="brand"><img src="{{ url_for('static', filename='images/flair-logo.png') }}"><div><h1>Flair International CRM</h1><p>Exact Processing & Accounts Sheets</p></div></div><div class="userbox"><b>{{ name }}</b><span>{{ role|upper }}</span><a href="{{ url_for('logout') }}">Logout</a></div></header>
+<div class="layout"><aside class="sidebar">
+<a href="{{ url_for('dashboard') }}">Dashboard Search</a>
+{% if role=='management' %}
+<a href="{{ url_for('add_client') }}">1. Add Client</a>
+{% endif %}
+<a href="{{ url_for('new_payment') }}">2. New Payment</a>
+<a href="{{ url_for('transfer_shares') }}">3. Transfer Shares</a>
+<a href="{{ url_for('processing_sheet') }}">Processing Sheet</a>
+<a href="{{ url_for('payments_sheet') }}">Payments & Shares Sheet</a>
+</aside><main class="main">
+{% with messages=get_flashed_messages() %}{% if messages %}<div class="flash">{{ messages[0] }}</div>{% endif %}{% endwith %}
+{% block content %}{% endblock %}
+</main></div><script src="{{ url_for('static', filename='js/app.js') }}"></script></body></html>

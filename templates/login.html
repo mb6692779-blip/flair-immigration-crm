@@ -1,23 +1,2 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Flair CRM Login</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body class="loginBody">
-  <div class="loginCard">
-    <img class="loginLogo" src="{{ url_for('static', filename='images/flair-logo.png') }}" alt="Flair International Logo">
-    <h1>Flair International CRM</h1>
-    <p>Secure Access Portal</p>
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}<div class="error">{{ messages[0] }}</div>{% endif %}
-    {% endwith %}
-    <form method="post">
-      <input name="username" placeholder="Username" required>
-      <input name="password" placeholder="Password" type="password" required>
-      <button>Login</button>
-    </form>
-  </div>
-</body>
-</html>
+<!doctype html><html><head><meta charset="utf-8"><title>Flair CRM Login</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"></head>
+<body class="loginBody"><div class="loginCard"><img class="loginLogo" src="{{ url_for('static', filename='images/flair-logo.png') }}"><h1>Flair International CRM</h1><p>Secure Server Login</p>{% with messages=get_flashed_messages() %}{% if messages %}<div class="error">{{ messages[0] }}</div>{% endif %}{% endwith %}<form method="post"><input name="username" placeholder="Username" required><input name="password" type="password" placeholder="Password" required><button>Login</button></form></div></body></html>

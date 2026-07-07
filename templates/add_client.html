@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block content %}<h2>Add Client</h2><div class="panel"><form method="post" class="gridForm">
+<input name="date" type="date" value="">
+<select name="visa_type">{% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}</select>
+<select name="section_type" id="sectionType" onchange="buildPartnerBoxes()"><option>Single</option><option>Group</option></select>
+<input name="group_size" id="groupSize" type="number" min="1" value="1" oninput="buildPartnerBoxes()" placeholder="Group Size">
+<input name="main_investor" placeholder="Main Investor / Client Name" required>
+<div id="partnerBoxes" class="full"></div>
+<select name="reference_type" onchange="showReferenceInputs(this.value)">{% for r in REFERENCE_TYPES %}<option>{{ r }}</option>{% endfor %}</select>
+<input name="reference_name" placeholder="Reference Person Name">
+<input name="partner_office_name" id="partnerOffice" placeholder="Partner Office Name" style="display:none">
+<input name="director_name" id="directorName" placeholder="Director Name" style="display:none">
+<select name="issue_status" onchange="toggleByValue(this,'issueDetails','Yes')"><option>No</option><option>Yes</option></select>
+<textarea name="issue_details" id="issueDetails" placeholder="Issue Details" style="display:none"></textarea>
+<textarea name="remarks" placeholder="Remarks"></textarea>
+<button>Add Client</button></form></div>{% endblock %}
