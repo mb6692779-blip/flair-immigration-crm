@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Back Office Work</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <input name="client_name" list="clientList" placeholder="Client Name">
+  <datalist id="clientList">{% for c in clients %}<option value="{{ c.client_name }}"></option>{% endfor %}</datalist>
+  <input name="document_type" placeholder="Document Type / Work Type">
+  <select name="work_given_by_role">{% for r in WORK_ROLES %}<option>{{ r }}</option>{% endfor %}</select>
+  <input name="work_given_by_name" placeholder="Person Name">
+  <textarea name="work_details" placeholder="What work was assigned?"></textarea>
+  <select name="internal_status">{% for s in WORK_STATUS %}<option>{{ s }}</option>{% endfor %}</select>
+  <select name="checked_by_role">{% for r in WORK_ROLES %}<option>{{ r }}</option>{% endfor %}</select>
+  <input name="checked_by_name" placeholder="Checked By Name">
+  <select name="sent_method">{% for s in SENT_METHODS %}<option>{{ s }}</option>{% endfor %}</select>
+  <select name="sent_status">{% for s in WORK_STATUS %}<option>{{ s }}</option>{% endfor %}</select>
+  <select name="external_response">{% for s in WORK_STATUS %}<option>{{ s }}</option>{% endfor %}</select>
+  <textarea name="external_remarks" placeholder="Bank/Lawyer response remarks"></textarea>
+  <textarea name="final_remarks" placeholder="Final Remarks"></textarea>
+  <button>Add Back Office Work</button>
+</form>
+</div>
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='backoffice_work') }}">Export CSV</a>
+<table>
+<tr><th>Client</th><th>Doc/Work</th><th>Given By</th><th>Details</th><th>Internal</th><th>Checked By</th><th>Sent</th><th>External Response</th><th>Remarks</th></tr>
+{% for r in rows %}
+<tr><td>{{ r.client_name }}</td><td>{{ r.document_type }}</td><td>{{ r.work_given_by_role }} - {{ r.work_given_by_name }}</td><td>{{ r.work_details }}</td><td>{{ r.internal_status }}</td><td>{{ r.checked_by_role }} - {{ r.checked_by_name }}</td><td>{{ r.sent_method }} / {{ r.sent_status }}</td><td>{{ r.external_response }} - {{ r.external_remarks }}</td><td>{{ r.final_remarks }}</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

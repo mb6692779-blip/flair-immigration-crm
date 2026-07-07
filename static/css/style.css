@@ -55,3 +55,5 @@ td input,td select,td textarea{font-size:12px;padding:7px}
 .loginCard{
   border-top:7px solid #1d4ed8;
 }
+
+.full{grid-column:1/-1}.green{color:#15803d}.red{color:#dc2626}

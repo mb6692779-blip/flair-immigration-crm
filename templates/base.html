@@ -25,13 +25,21 @@
   <aside class="sidebar">
     {% if role == 'management' %}
     <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('intake') }}">Client Intake</a>
     <a href="{{ url_for('clients') }}">Clients</a>
+    <a href="{{ url_for('stage_payments') }}">Payment Stages</a>
+    <a href="{{ url_for('shares') }}">Shares</a>
+    <a href="{{ url_for('visa_updates') }}">Visa Updates</a>
     <a href="{{ url_for('processing') }}">Processing</a>
+    <a href="{{ url_for('backoffice_work') }}">Back Office Work</a>
+    <a href="{{ url_for('marketing_work') }}">Marketing / IT</a>
     <a href="{{ url_for('leads') }}">Leads</a>
-    <a href="{{ url_for('payments') }}">Payments</a>
+    <a href="{{ url_for('payments') }}">Payments Old</a>
     <a href="{{ url_for('audit_page') }}">Audit Logs</a>
     {% elif role == 'accounts' %}
-    <a href="{{ url_for('payments') }}">Payments</a>
+    <a href="{{ url_for('stage_payments') }}">Payment Stages</a>
+    <a href="{{ url_for('shares') }}">Shares</a>
+    <a href="{{ url_for('payments') }}">Payments Old</a>
     {% endif %}
   </aside>
   <main class="main">

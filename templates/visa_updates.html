@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Visa Process Updates</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <input name="client_name" list="clientList" placeholder="Client Name">
+  <datalist id="clientList">{% for c in clients %}<option value="{{ c.client_name }}">{{ c.program }}</option>{% endfor %}</datalist>
+  <select name="visa_program">{% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}</select>
+  <select name="update_source">{% for s in UPDATE_SOURCES %}<option>{{ s }}</option>{% endfor %}</select>
+  <input name="source_name" placeholder="Source Person Name">
+  <input name="current_step" placeholder="Current Process Step">
+  <select name="moved_forward"><option>Yes</option><option>No</option></select>
+  <select name="issue_end">{% for i in ISSUE_ENDS %}<option>{{ i }}</option>{% endfor %}</select>
+  <select name="sheet_updated"><option>No</option><option>Yes</option></select>
+  <textarea name="update_details" placeholder="What update received? Why not moved?"></textarea>
+  <button>Add Visa Update</button>
+</form>
+</div>
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='visa_updates') }}">Export CSV</a>
+<table>
+<tr><th>Client</th><th>Program</th><th>Source</th><th>Step</th><th>Moved?</th><th>Issue End</th><th>Sheet Updated</th><th>Action</th><th>Details</th></tr>
+{% for r in rows %}
+<tr><td>{{ r.client_name }}</td><td>{{ r.visa_program }}</td><td>{{ r.update_source }} - {{ r.source_name }}</td><td>{{ r.current_step }}</td><td>{{ r.moved_forward }}</td><td>{{ r.issue_end }}</td><td>{% if r.sheet_updated=='Yes' %}<b class="green">Done</b>{% else %}<b class="red">Pending Sheet Update</b>{% endif %}</td><td>{% if r.sheet_updated!='Yes' %}<form method="post" action="{{ url_for('mark_visa_sheet', id=r.id) }}"><button>Mark Done</button></form>{% endif %}</td><td>{{ r.update_details }}</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

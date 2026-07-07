@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Marketing / IT / Social Media</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <input name="meeting_date" type="date">
+  <select name="meeting_topic">{% for t in MARKETING_TOPICS %}<option>{{ t }}</option>{% endfor %}</select>
+  <textarea name="discussion_remarks" placeholder="Meeting discussion / decisions"></textarea>
+  <select name="content_required"><option>Yes</option><option>No</option></select>
+  <select name="content_status">{% for s in CONTENT_STATUS %}<option>{{ s }}</option>{% endfor %}</select>
+  <input name="post_date" type="date">
+  <input name="program_name" placeholder="Program Name">
+  <select name="post_status"><option>Pending</option><option>Posted</option><option>Needs Correction</option></select>
+  <textarea name="post_remarks" placeholder="Post quality / missing points / remarks"></textarea>
+  <button>Add Marketing Update</button>
+</form>
+</div>
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='marketing_work') }}">Export CSV</a>
+<table>
+<tr><th>Meeting Date</th><th>Topic</th><th>Discussion</th><th>Content</th><th>Post Date</th><th>Program</th><th>Post Status</th><th>Remarks</th></tr>
+{% for r in rows %}
+<tr><td>{{ r.meeting_date }}</td><td>{{ r.meeting_topic }}</td><td>{{ r.discussion_remarks }}</td><td>{{ r.content_required }} / {{ r.content_status }}</td><td>{{ r.post_date }}</td><td>{{ r.program_name }}</td><td>{{ r.post_status }}</td><td>{{ r.post_remarks }}</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

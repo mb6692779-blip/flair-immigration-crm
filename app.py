@@ -34,6 +34,18 @@ INACTIVE_REASONS = [
     "Moved to Another Consultant", "Duplicate", "Other"
 ]
 
+VISA_TYPES = ["D2", "D7", "D8", "D9", "Golden Visa", "Digital Nomad", "Visit Visa", "Other"]
+SECTION_TYPES = ["Single", "Group"]
+YES_NO = ["No", "Yes"]
+UPDATE_SOURCES = ["My Self", "Manager", "Director", "Team Member", "Accounts", "Other"]
+ISSUE_ENDS = ["Client", "Vendor", "Bank", "Lawyer", "Management", "Other"]
+SHARE_TYPES = ["FS Lisbon", "Lawyer", "Other Partner / Referral"]
+WORK_ROLES = ["GM", "Managing Director", "Director", "Manager", "Team Member", "Other"]
+SENT_METHODS = ["TCS", "Leopard", "Email", "Hand", "Other"]
+WORK_STATUS = ["Pending", "Complete", "Not Complete", "Missing"]
+MARKETING_TOPICS = ["Social Media", "Website", "Paid Promotion", "Content", "Other"]
+CONTENT_STATUS = ["Working on it", "Done from my end", "Given to IT", "Pending"]
+
 def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -106,6 +118,119 @@ def init_db():
             lead_status TEXT DEFAULT 'New Lead',
             next_followup TEXT,
             remarks TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS client_intake (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            visa_type TEXT,
+            section_type TEXT,
+            group_size INTEGER DEFAULT 1,
+            main_investor TEXT,
+            partner_names TEXT,
+            reference_status TEXT,
+            reference_name TEXT,
+            issue_status TEXT,
+            issue_details TEXT,
+            final_remarks TEXT,
+            status TEXT DEFAULT 'Active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS payment_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name TEXT,
+            visa_type TEXT,
+            total_payment REAL DEFAULT 0,
+            stage1_required REAL DEFAULT 0,
+            stage1_received REAL DEFAULT 0,
+            stage1_status TEXT DEFAULT 'Pending',
+            stage1_remarks TEXT,
+            stage2_required REAL DEFAULT 0,
+            stage2_received REAL DEFAULT 0,
+            stage2_status TEXT DEFAULT 'Pending',
+            stage2_remarks TEXT,
+            stage3_required REAL DEFAULT 0,
+            stage3_received REAL DEFAULT 0,
+            stage3_status TEXT DEFAULT 'Pending',
+            stage3_remarks TEXT,
+            process_remarks TEXT,
+            sheet_updated TEXT DEFAULT 'No',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS share_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            share_type TEXT,
+            client_name TEXT,
+            total_share REAL DEFAULT 0,
+            stage1_required REAL DEFAULT 0,
+            stage1_paid REAL DEFAULT 0,
+            stage1_status TEXT DEFAULT 'Pending',
+            stage1_remarks TEXT,
+            stage2_required REAL DEFAULT 0,
+            stage2_paid REAL DEFAULT 0,
+            stage2_status TEXT DEFAULT 'Pending',
+            stage2_remarks TEXT,
+            stage3_required REAL DEFAULT 0,
+            stage3_paid REAL DEFAULT 0,
+            stage3_status TEXT DEFAULT 'Pending',
+            stage3_remarks TEXT,
+            other_department TEXT,
+            other_person TEXT,
+            manual_remarks TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS visa_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name TEXT,
+            visa_program TEXT,
+            update_source TEXT,
+            source_name TEXT,
+            current_step TEXT,
+            moved_forward TEXT,
+            issue_end TEXT,
+            update_details TEXT,
+            sheet_updated TEXT DEFAULT 'No',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS backoffice_work (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name TEXT,
+            document_type TEXT,
+            work_given_by_role TEXT,
+            work_given_by_name TEXT,
+            work_details TEXT,
+            internal_status TEXT DEFAULT 'Pending',
+            checked_by_role TEXT,
+            checked_by_name TEXT,
+            sent_method TEXT,
+            sent_status TEXT DEFAULT 'Pending',
+            external_response TEXT DEFAULT 'Pending',
+            external_remarks TEXT,
+            final_remarks TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS marketing_work (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_date TEXT,
+            meeting_topic TEXT,
+            discussion_remarks TEXT,
+            content_required TEXT,
+            content_status TEXT DEFAULT 'Working on it',
+            post_date TEXT,
+            program_name TEXT,
+            post_status TEXT DEFAULT 'Pending',
+            post_remarks TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -305,6 +430,17 @@ def inject_globals():
         PROCESS_STATUS=PROCESS_STATUS,
         PAYMENT_STATUS=PAYMENT_STATUS,
         INACTIVE_REASONS=INACTIVE_REASONS,
+        VISA_TYPES=VISA_TYPES,
+        SECTION_TYPES=SECTION_TYPES,
+        YES_NO=YES_NO,
+        UPDATE_SOURCES=UPDATE_SOURCES,
+        ISSUE_ENDS=ISSUE_ENDS,
+        SHARE_TYPES=SHARE_TYPES,
+        WORK_ROLES=WORK_ROLES,
+        SENT_METHODS=SENT_METHODS,
+        WORK_STATUS=WORK_STATUS,
+        MARKETING_TOPICS=MARKETING_TOPICS,
+        CONTENT_STATUS=CONTENT_STATUS,
     )
 
 @app.route("/login", methods=["GET", "POST"])
@@ -491,6 +627,231 @@ def leads():
         rows = con.execute("SELECT * FROM leads ORDER BY id DESC").fetchall()
     return render_template("leads.html", rows=rows)
 
+
+@app.route("/intake", methods=["GET", "POST"])
+@login_required
+@management_required
+def intake():
+    if request.method == "POST":
+        now = datetime.now().isoformat(timespec="seconds")
+        data = request.form
+        group_size = int(data.get("group_size") or 1)
+        partners = []
+        for i in range(1, group_size):
+            val = data.get(f"partner_{i}", "").strip()
+            if val:
+                partners.append(val)
+        with db() as con:
+            con.execute("""
+                INSERT INTO client_intake(visa_type,section_type,group_size,main_investor,partner_names,reference_status,reference_name,issue_status,issue_details,final_remarks,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                data.get("visa_type"), data.get("section_type"), group_size, data.get("main_investor"),
+                json.dumps(partners, ensure_ascii=False), data.get("reference_status"), data.get("reference_name"),
+                data.get("issue_status"), data.get("issue_details"), data.get("final_remarks"), data.get("status","Active"), now, now
+            ))
+
+            # Also create main client record if not exists.
+            name = data.get("main_investor", "").strip()
+            if name:
+                found = con.execute("SELECT id FROM clients WHERE lower(client_name)=lower(?)", (name,)).fetchone()
+                if not found:
+                    con.execute("""
+                        INSERT INTO clients(client_name,phone,email,city,country,program,status,inactive_reason,remarks,created_at,updated_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """, (name, "", "", "", "", data.get("visa_type"), data.get("status","Active"), "", data.get("final_remarks"), now, now))
+            con.commit()
+        audit("intake_added", data.get("main_investor",""))
+        return redirect(url_for("intake"))
+
+    with db() as con:
+        rows = con.execute("SELECT * FROM client_intake ORDER BY id DESC").fetchall()
+    return render_template("intake.html", rows=rows)
+
+
+@app.route("/stage-payments", methods=["GET", "POST"])
+@login_required
+@accounts_or_management
+def stage_payments():
+    if request.method == "POST":
+        now = datetime.now().isoformat(timespec="seconds")
+        data = request.form
+        total = float(data.get("total_payment") or 0)
+        s1_req, s2_req, s3_req = total * 0.70, total * 0.15, total * 0.15
+        s1_rec = float(data.get("stage1_received") or 0)
+        s2_rec = float(data.get("stage2_received") or 0)
+        s3_rec = float(data.get("stage3_received") or 0)
+
+        def status(rec, req):
+            return "Complete" if req and rec >= req else "Pending"
+
+        with db() as con:
+            con.execute("""
+                INSERT INTO payment_stages(client_name,visa_type,total_payment,stage1_required,stage1_received,stage1_status,stage1_remarks,stage2_required,stage2_received,stage2_status,stage2_remarks,stage3_required,stage3_received,stage3_status,stage3_remarks,process_remarks,sheet_updated,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                data.get("client_name"), data.get("visa_type"), total,
+                s1_req, s1_rec, status(s1_rec, s1_req), data.get("stage1_remarks"),
+                s2_req, s2_rec, status(s2_rec, s2_req), data.get("stage2_remarks"),
+                s3_req, s3_rec, status(s3_rec, s3_req), data.get("stage3_remarks"),
+                data.get("process_remarks"), data.get("sheet_updated","No"), now, now
+            ))
+            con.commit()
+        audit("stage_payment_added", data.get("client_name",""))
+        return redirect(url_for("stage_payments"))
+
+    with db() as con:
+        rows = con.execute("SELECT * FROM payment_stages ORDER BY id DESC").fetchall()
+        clients = con.execute("SELECT client_name, program FROM clients ORDER BY client_name").fetchall()
+    return render_template("stage_payments.html", rows=rows, clients=clients)
+
+
+@app.post("/stage-payments/<int:id>/sheet")
+@login_required
+@accounts_or_management
+def mark_payment_sheet(id):
+    with db() as con:
+        con.execute("UPDATE payment_stages SET sheet_updated='Yes', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), id))
+        con.commit()
+    audit("payment_sheet_updated", str(id))
+    return redirect(url_for("stage_payments"))
+
+
+@app.route("/shares", methods=["GET", "POST"])
+@login_required
+@accounts_or_management
+def shares():
+    if request.method == "POST":
+        now = datetime.now().isoformat(timespec="seconds")
+        data = request.form
+        share_type = data.get("share_type")
+        total = float(data.get("total_share") or 0)
+
+        if share_type == "FS Lisbon":
+            reqs = (total * 0.70, total * 0.15, total * 0.15)
+        elif share_type == "Lawyer":
+            reqs = (total * 0.70, total * 0.30, 0)
+        else:
+            reqs = (0, 0, 0)
+
+        p1 = float(data.get("stage1_paid") or 0)
+        p2 = float(data.get("stage2_paid") or 0)
+        p3 = float(data.get("stage3_paid") or 0)
+
+        def status(paid, req):
+            if req == 0:
+                return "N/A"
+            return "Complete" if paid >= req else "Pending"
+
+        with db() as con:
+            con.execute("""
+                INSERT INTO share_stages(share_type,client_name,total_share,stage1_required,stage1_paid,stage1_status,stage1_remarks,stage2_required,stage2_paid,stage2_status,stage2_remarks,stage3_required,stage3_paid,stage3_status,stage3_remarks,other_department,other_person,manual_remarks,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                share_type, data.get("client_name"), total,
+                reqs[0], p1, status(p1, reqs[0]), data.get("stage1_remarks"),
+                reqs[1], p2, status(p2, reqs[1]), data.get("stage2_remarks"),
+                reqs[2], p3, status(p3, reqs[2]), data.get("stage3_remarks"),
+                data.get("other_department"), data.get("other_person"), data.get("manual_remarks"), now, now
+            ))
+            con.commit()
+        audit("share_added", f"{share_type} | {data.get('client_name','')}")
+        return redirect(url_for("shares"))
+
+    with db() as con:
+        rows = con.execute("SELECT * FROM share_stages ORDER BY id DESC").fetchall()
+        clients = con.execute("SELECT client_name FROM clients ORDER BY client_name").fetchall()
+    return render_template("shares.html", rows=rows, clients=clients)
+
+
+@app.route("/visa-updates", methods=["GET", "POST"])
+@login_required
+@management_required
+def visa_updates():
+    if request.method == "POST":
+        now = datetime.now().isoformat(timespec="seconds")
+        data = request.form
+        with db() as con:
+            con.execute("""
+                INSERT INTO visa_updates(client_name,visa_program,update_source,source_name,current_step,moved_forward,issue_end,update_details,sheet_updated,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                data.get("client_name"), data.get("visa_program"), data.get("update_source"), data.get("source_name"),
+                data.get("current_step"), data.get("moved_forward"), data.get("issue_end"), data.get("update_details"),
+                data.get("sheet_updated","No"), now, now
+            ))
+            con.commit()
+        audit("visa_update_added", data.get("client_name",""))
+        return redirect(url_for("visa_updates"))
+
+    with db() as con:
+        rows = con.execute("SELECT * FROM visa_updates ORDER BY id DESC").fetchall()
+        clients = con.execute("SELECT client_name, program FROM clients ORDER BY client_name").fetchall()
+    return render_template("visa_updates.html", rows=rows, clients=clients)
+
+
+@app.post("/visa-updates/<int:id>/sheet")
+@login_required
+@management_required
+def mark_visa_sheet(id):
+    with db() as con:
+        con.execute("UPDATE visa_updates SET sheet_updated='Yes', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), id))
+        con.commit()
+    audit("visa_sheet_updated", str(id))
+    return redirect(url_for("visa_updates"))
+
+
+@app.route("/backoffice-work", methods=["GET", "POST"])
+@login_required
+@management_required
+def backoffice_work():
+    if request.method == "POST":
+        now = datetime.now().isoformat(timespec="seconds")
+        data = request.form
+        with db() as con:
+            con.execute("""
+                INSERT INTO backoffice_work(client_name,document_type,work_given_by_role,work_given_by_name,work_details,internal_status,checked_by_role,checked_by_name,sent_method,sent_status,external_response,external_remarks,final_remarks,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                data.get("client_name"), data.get("document_type"), data.get("work_given_by_role"), data.get("work_given_by_name"),
+                data.get("work_details"), data.get("internal_status"), data.get("checked_by_role"), data.get("checked_by_name"),
+                data.get("sent_method"), data.get("sent_status"), data.get("external_response"), data.get("external_remarks"),
+                data.get("final_remarks"), now, now
+            ))
+            con.commit()
+        audit("backoffice_work_added", data.get("client_name",""))
+        return redirect(url_for("backoffice_work"))
+
+    with db() as con:
+        rows = con.execute("SELECT * FROM backoffice_work ORDER BY id DESC").fetchall()
+        clients = con.execute("SELECT client_name FROM clients ORDER BY client_name").fetchall()
+    return render_template("backoffice_work.html", rows=rows, clients=clients)
+
+
+@app.route("/marketing-work", methods=["GET", "POST"])
+@login_required
+@management_required
+def marketing_work():
+    if request.method == "POST":
+        now = datetime.now().isoformat(timespec="seconds")
+        data = request.form
+        with db() as con:
+            con.execute("""
+                INSERT INTO marketing_work(meeting_date,meeting_topic,discussion_remarks,content_required,content_status,post_date,program_name,post_status,post_remarks,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                data.get("meeting_date"), data.get("meeting_topic"), data.get("discussion_remarks"), data.get("content_required"),
+                data.get("content_status"), data.get("post_date"), data.get("program_name"), data.get("post_status"),
+                data.get("post_remarks"), now, now
+            ))
+            con.commit()
+        audit("marketing_work_added", data.get("program_name",""))
+        return redirect(url_for("marketing_work"))
+
+    with db() as con:
+        rows = con.execute("SELECT * FROM marketing_work ORDER BY id DESC").fetchall()
+    return render_template("marketing_work.html", rows=rows)
+
 @app.get("/audit")
 @login_required
 @management_required
@@ -502,10 +863,10 @@ def audit_page():
 @app.get("/export/<table>")
 @login_required
 def export_table(table):
-    allowed = {"clients", "processing", "payments", "leads", "audit_log"}
+    allowed = {"clients", "processing", "payments", "leads", "client_intake", "payment_stages", "share_stages", "visa_updates", "backoffice_work", "marketing_work", "audit_log"}
     if table not in allowed:
         return "Invalid table", 400
-    if session.get("role") == "accounts" and table != "payments":
+    if session.get("role") == "accounts" and table not in ["payments", "payment_stages", "share_stages"]:
         return "Access denied", 403
     with db() as con:
         rows = con.execute(f"SELECT * FROM {table}").fetchall()
@@ -528,7 +889,7 @@ def backup():
     backup_file = BACKUP_DIR / f"flair_crm_backup_{stamp}.json"
     data = {}
     with db() as con:
-        for table in ["clients", "processing", "payments", "leads", "audit_log"]:
+        for table in ["clients", "processing", "payments", "leads", "client_intake", "payment_stages", "share_stages", "visa_updates", "backoffice_work", "marketing_work", "audit_log"]:
             rows = con.execute(f"SELECT * FROM {table}").fetchall()
             data[table] = [dict(r) for r in rows]
     backup_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

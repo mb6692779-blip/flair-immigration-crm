@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Payment Stages</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <input name="client_name" list="clientList" placeholder="Client Name" required>
+  <datalist id="clientList">{% for c in clients %}<option value="{{ c.client_name }}">{{ c.program }}</option>{% endfor %}</datalist>
+  <select name="visa_type">{% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}</select>
+  <input name="total_payment" type="number" step="0.01" placeholder="Total Payment">
+  <input name="stage1_received" type="number" step="0.01" placeholder="Stage 1 Received (70%)">
+  <textarea name="stage1_remarks" placeholder="Stage 1 Remarks if not complete"></textarea>
+  <input name="stage2_received" type="number" step="0.01" placeholder="Stage 2 Received (15%)">
+  <textarea name="stage2_remarks" placeholder="Stage 2 Remarks if not complete"></textarea>
+  <input name="stage3_received" type="number" step="0.01" placeholder="Stage 3 Received (15%)">
+  <textarea name="stage3_remarks" placeholder="Stage 3 Remarks if not complete"></textarea>
+  <select name="sheet_updated"><option>No</option><option>Yes</option></select>
+  <textarea name="process_remarks" placeholder="Manual remarks: current visa process stage"></textarea>
+  <button>Add Payment Stage</button>
+</form>
+</div>
+
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='payment_stages') }}">Export CSV</a>
+<table>
+<tr><th>Client</th><th>Visa</th><th>Total</th><th>70% Required</th><th>70% Received</th><th>Status</th><th>15% Required</th><th>15% Received</th><th>Status</th><th>15% Required</th><th>15% Received</th><th>Status</th><th>Sheet Updated</th><th>Action</th><th>Remarks</th></tr>
+{% for r in rows %}
+<tr>
+<td>{{ r.client_name }}</td><td>{{ r.visa_type }}</td><td>{{ r.total_payment }}</td>
+<td>{{ r.stage1_required }}</td><td>{{ r.stage1_received }}</td><td>{{ r.stage1_status }}<br>{{ r.stage1_remarks }}</td>
+<td>{{ r.stage2_required }}</td><td>{{ r.stage2_received }}</td><td>{{ r.stage2_status }}<br>{{ r.stage2_remarks }}</td>
+<td>{{ r.stage3_required }}</td><td>{{ r.stage3_received }}</td><td>{{ r.stage3_status }}<br>{{ r.stage3_remarks }}</td>
+<td>{% if r.sheet_updated=='Yes' %}<b class="green">Done</b>{% else %}<b class="red">Pending Sheet Update</b>{% endif %}</td>
+<td>{% if r.sheet_updated!='Yes' %}<form method="post" action="{{ url_for('mark_payment_sheet', id=r.id) }}"><button>Mark Done</button></form>{% endif %}</td>
+<td>{{ r.process_remarks }}</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

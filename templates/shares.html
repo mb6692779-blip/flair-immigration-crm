@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Shares: FS Lisbon / Lawyer / Other Partner</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <select name="share_type">
+    {% for s in SHARE_TYPES %}<option>{{ s }}</option>{% endfor %}
+  </select>
+  <input name="client_name" list="clientList" placeholder="Client Name">
+  <datalist id="clientList">{% for c in clients %}<option value="{{ c.client_name }}"></option>{% endfor %}</datalist>
+  <input name="total_share" type="number" step="0.01" placeholder="Total Share">
+  <input name="stage1_paid" type="number" step="0.01" placeholder="Stage 1 Paid">
+  <textarea name="stage1_remarks" placeholder="Stage 1 Remarks if pending"></textarea>
+  <input name="stage2_paid" type="number" step="0.01" placeholder="Stage 2 Paid">
+  <textarea name="stage2_remarks" placeholder="Stage 2 Remarks if pending"></textarea>
+  <input name="stage3_paid" type="number" step="0.01" placeholder="Stage 3 Paid (FS only)">
+  <textarea name="stage3_remarks" placeholder="Stage 3 Remarks if pending"></textarea>
+  <input name="other_department" placeholder="Other Department / Partner Office">
+  <input name="other_person" placeholder="Referred By / Person Name">
+  <textarea name="manual_remarks" placeholder="Manual Remarks: how much paid, pending reason, etc."></textarea>
+  <button>Add Share</button>
+</form>
+</div>
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='share_stages') }}">Export CSV</a>
+<table>
+<tr><th>Type</th><th>Client</th><th>Total</th><th>Stage1 Required</th><th>Paid</th><th>Status</th><th>Stage2 Required</th><th>Paid</th><th>Status</th><th>Stage3 Required</th><th>Paid</th><th>Status</th><th>Other</th><th>Remarks</th></tr>
+{% for r in rows %}
+<tr><td>{{ r.share_type }}</td><td>{{ r.client_name }}</td><td>{{ r.total_share }}</td><td>{{ r.stage1_required }}</td><td>{{ r.stage1_paid }}</td><td>{{ r.stage1_status }} {{ r.stage1_remarks }}</td><td>{{ r.stage2_required }}</td><td>{{ r.stage2_paid }}</td><td>{{ r.stage2_status }} {{ r.stage2_remarks }}</td><td>{{ r.stage3_required }}</td><td>{{ r.stage3_paid }}</td><td>{{ r.stage3_status }} {{ r.stage3_remarks }}</td><td>{{ r.other_department }} {{ r.other_person }}</td><td>{{ r.manual_remarks }}</td></tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

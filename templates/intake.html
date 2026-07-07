@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Client Intake</h2>
+<div class="panel">
+<form method="post" class="gridForm">
+  <select name="visa_type">
+    {% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}
+  </select>
+  <select name="section_type" id="sectionType" onchange="buildPartnerBoxes()">
+    {% for s in SECTION_TYPES %}<option>{{ s }}</option>{% endfor %}
+  </select>
+  <input name="group_size" id="groupSize" type="number" min="1" value="1" placeholder="Group Size" oninput="buildPartnerBoxes()">
+  <input name="main_investor" placeholder="Main Investor / Client Name" required>
+  <div id="partnerBoxes" class="full"></div>
+
+  <select name="reference_status" onchange="toggleByValue(this,'referenceBox','Yes')">
+    <option>No</option><option>Yes</option>
+  </select>
+  <input name="reference_name" id="referenceBox" placeholder="Reference Name" style="display:none">
+
+  <select name="issue_status" onchange="toggleByValue(this,'issueBox','Yes')">
+    <option>No</option><option>Yes</option>
+  </select>
+  <textarea name="issue_details" id="issueBox" placeholder="Issue Details" style="display:none"></textarea>
+
+  <select name="status"><option>Active</option><option>Inactive</option></select>
+  <textarea name="final_remarks" placeholder="Final Remarks"></textarea>
+  <button>Add Intake</button>
+</form>
+</div>
+
+<div class="panel">
+<a class="export" href="{{ url_for('export_table', table='client_intake') }}">Export CSV</a>
+<table>
+<tr><th>Date</th><th>Visa</th><th>Section</th><th>Group</th><th>Main Investor</th><th>Partners</th><th>Reference</th><th>Issue</th><th>Status</th><th>Remarks</th></tr>
+{% for r in rows %}
+<tr>
+<td>{{ r.created_at }}</td><td>{{ r.visa_type }}</td><td>{{ r.section_type }}</td><td>{{ r.group_size }}</td><td>{{ r.main_investor }}</td><td>{{ r.partner_names }}</td><td>{{ r.reference_name }}</td><td>{{ r.issue_details }}</td><td>{{ r.status }}</td><td>{{ r.final_remarks }}</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}
