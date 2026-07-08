@@ -2,57 +2,83 @@
 {% block content %}
 <h2>Add New Payment</h2>
 
-<div class="panel">
-  <h3>Search / Select Client Payment</h3>
-  <div class="gridForm">
-    <input id="clientSearch" list="paymentClientList" placeholder="Client name type karo e.g Adnan Tahir / Rizwan Sharif">
-    <datalist id="paymentClientList">
-      {% for p in payment_data %}<option value="{{ p.client_name }}">{{ p.visa }} | Balance {{ p.balance_eur }} EUR</option>{% endfor %}
-    </datalist>
-    <select id="paymentSelect" onchange="loadPaymentClient()">
-      <option value="">New client payment account</option>
-      {% for p in payment_data %}
-      <option value="{{ p.id }}">{{ p.client_name }} | {{ p.visa }} | Balance {{ "%.0f"|format(p.balance_eur) }} EUR | {{ p.allowed }}</option>
-      {% endfor %}
-    </select>
-    <button type="button" onclick="findClientPayment()">Load Client</button>
-  </div>
+{% if pending_requests %}
+<div class="panel" style="border-left:6px solid #f59e0b">
+  <h3>Management Approval Requests</h3>
+  <table>
+    <tr>
+      <th>Client</th><th>Visa</th><th>INV</th><th>Date</th><th>Stage</th>
+      <th>EUR</th><th>ROE</th><th>PKR</th><th>Requested By</th><th>Remarks</th><th>Decision</th>
+    </tr>
+    {% for r in pending_requests %}
+    <tr>
+      <td>{{ r.client_name }}</td><td>{{ r.visa }}</td><td>{{ r.inv }}</td>
+      <td>{{ r.payment_date }}</td><td>{{ r.stage }}</td>
+      <td>{{ r.received_eur }}</td><td>{{ r.roe }}</td><td>{{ r.received_pkr }}</td>
+      <td>{{ r.requested_by }}</td><td>{{ r.remarks }}</td>
+      <td>
+        <form method="post" action="{{ url_for('decide_payment_request', req_id=r.id, decision='approve') }}" style="display:inline">
+          <input name="management_note" placeholder="Note" style="width:120px">
+          <button style="background:#16a34a">Approve</button>
+        </form>
+        <form method="post" action="{{ url_for('decide_payment_request', req_id=r.id, decision='reject') }}" style="display:inline">
+          <button style="background:#dc2626">Reject</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
 </div>
+{% endif %}
 
-<div class="panel" id="paymentSummary" style="display:none">
-  <h3 id="summaryTitle">Client Payment Details</h3>
-  <div class="cards">
-    <div class="card"><span>Total Deal</span><b id="sumTotal">0 EUR</b></div>
-    <div class="card"><span>Received So Far</span><b id="sumReceived">0 EUR</b></div>
-    <div class="card"><span>Pending EUR</span><b id="sumBalanceEur">0 EUR</b></div>
-    <div class="card"><span>Pending PKR</span><b id="sumBalancePkr">0 PKR</b></div>
-    <div class="card"><span>Current Stage</span><b id="sumStage">Pending</b></div>
-  </div>
-  <div class="stageBar"><div id="stageProgress"></div></div>
-  <p class="notice" id="stageNotice">Allowed next stage will show here.</p>
+<div class="panel">
+  <h3>Client Payment Summary</h3>
+  <table>
+    <tr>
+      <th>Client</th><th>Visa</th><th>INV</th><th>Total EUR</th><th>Received EUR</th><th>Received PKR</th>
+      <th>Balance EUR</th><th>Balance PKR</th><th>Current Stage</th><th>Allowed Next</th>
+    </tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.a.client_name }}</td><td>{{ r.a.visa }}</td><td>{{ r.a.inv }}</td>
+      <td>{{ r.a.total_eur }}</td><td>{{ "%.2f"|format(r.received_eur) }}</td><td>{{ r.a.received_pkr }}</td>
+      <td>{{ r.a.balance_eur }}</td><td>{{ r.a.balance_pkr }}</td>
+      <td>{{ r.a.payment_stage }}</td><td><b>{{ r.allowed }}</b></td>
+    </tr>
+    {% endfor %}
+  </table>
 </div>
 
 <div class="panel">
   <h3>Add Payment</h3>
-  <form method="post" class="gridForm" id="paymentForm">
-    <input type="hidden" name="client_payment_id" id="client_payment_id">
+  <p><b>Accounts:</b> payment request management approval ke baad sheet mein update hogi. <b>Management/Server:</b> direct update kar sakte hain.</p>
+
+  <form method="post" class="gridForm">
+    <select name="client_payment_id" id="clientPaymentSelect" onchange="fillPaymentInfo()">
+      <option value="">Create New Payment Account</option>
+      {% for r in rows %}
+      <option value="{{ r.a.id }}">
+        {{ r.a.client_name }} | {{ r.a.visa }} | Balance {{ "%.0f"|format(r.a.balance_eur or 0) }} EUR / {{ "%.0f"|format(r.a.balance_pkr or 0) }} PKR | Allowed: {{ r.allowed }}
+      </option>
+      {% endfor %}
+    </select>
 
     <input name="payment_date" type="date">
-    <input name="client_name" id="client_name" list="clientList" placeholder="Client Name">
+    <input name="client_name" id="clientNameInput" list="clientList" placeholder="Client Name for new account">
     <datalist id="clientList">
       {% for c in clients %}<option value="{{ c.main_investor }}">{{ c.visa_type }}</option>{% endfor %}
     </datalist>
 
-    <select name="visa" id="visa">{% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}</select>
-    <input name="inv" id="inv" placeholder="Invoice No">
-    <input name="total_eur" id="total_eur" type="number" step="0.01" placeholder="Total EUR">
-    <input name="invoice_roe" id="invoice_roe" type="number" step="0.01" placeholder="Invoice ROE">
+    <select name="visa" id="visaInput">{% for v in VISA_TYPES %}<option>{{ v }}</option>{% endfor %}</select>
+    <input name="inv" id="invInput" placeholder="Invoice No for new account">
+    <input name="total_eur" id="totalEurInput" type="number" step="0.01" placeholder="Total EUR for new account">
+    <input name="invoice_roe" id="invoiceRoeInput" type="number" step="0.01" placeholder="Invoice ROE for new account">
 
-    <select name="stage" id="stage">
+    <select name="stage" id="stageInput">
       {% for s in PAYMENT_STAGES %}<option>{{ s }}</option>{% endfor %}
     </select>
-    <input name="received_eur" type="number" step="0.01" placeholder="New Payment Received EUR" required>
-    <input name="roe" type="number" step="0.01" placeholder="New Payment ROE" required>
+    <input name="received_eur" type="number" step="0.01" placeholder="New Received EUR" required>
+    <input name="roe" type="number" step="0.01" placeholder="Payment ROE" required>
     <input name="updated_by" placeholder="Accounts Person Name" required>
     <textarea name="remarks" placeholder="Remarks if payment incomplete / any note"></textarea>
 
@@ -61,17 +87,13 @@
 </div>
 
 <div class="panel">
-  <h3>Current Payment Records</h3>
-  <table>
-    <tr><th>Client</th><th>Visa</th><th>Total EUR</th><th>Received EUR</th><th>Received PKR</th><th>%</th><th>Balance EUR</th><th>Balance PKR</th><th>Current Stage</th><th>Allowed Next</th></tr>
-    {% for r in rows %}
-    <tr>
-      <td>{{ r.a.client_name }}</td><td>{{ r.a.visa }}</td><td>{{ r.a.total_eur }}</td><td>{{ "%.2f"|format(r.received_eur) }}</td>
-      <td>{{ r.a.received_pkr }}</td><td>{{ "%.1f"|format(r.a.received_percent or 0) }}%</td>
-      <td>{{ r.a.balance_eur }}</td><td>{{ r.a.balance_pkr }}</td><td>{{ r.a.payment_stage }}</td><td><b>{{ r.allowed }}</b></td>
-    </tr>
-    {% endfor %}
-  </table>
+  <h3>Selected Client Details</h3>
+  <div class="cards">
+    <div class="card"><span>Total EUR</span><b id="showTotal">0</b></div>
+    <div class="card"><span>Received EUR</span><b id="showReceived">0</b></div>
+    <div class="card"><span>Balance EUR</span><b id="showBalance">0</b></div>
+    <div class="card"><span>Allowed Next</span><b id="showAllowed">-</b></div>
+  </div>
 </div>
 
 <div class="panel">
@@ -79,68 +101,38 @@
   <table>
     <tr><th>Client</th><th>Date</th><th>Stage</th><th>EUR</th><th>ROE</th><th>PKR</th><th>Updated By</th><th>Remarks</th></tr>
     {% for h in history %}
-    <tr><td>{{ h.client_name }}</td><td>{{ h.payment_date }}</td><td>{{ h.stage }}</td><td>{{ h.received_eur }}</td><td>{{ h.roe }}</td><td>{{ h.received_pkr }}</td><td>{{ h.updated_by }}</td><td>{{ h.remarks }}</td></tr>
+    <tr>
+      <td>{{ h.client_name }}</td><td>{{ h.payment_date }}</td><td>{{ h.stage }}</td>
+      <td>{{ h.received_eur }}</td><td>{{ h.roe }}</td><td>{{ h.received_pkr }}</td>
+      <td>{{ h.updated_by }}</td><td>{{ h.remarks }}</td>
+    </tr>
     {% endfor %}
   </table>
 </div>
 
 <script>
-const PAYMENTS = {{ payment_data|tojson }};
-const stages = ["Stage 1 - 70%", "Stage 2 - 15%", "Stage 3 - 15%"]; 
-
-function fmt(n){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
-function findClientPayment(){
-  const q = (document.getElementById('clientSearch').value || '').toLowerCase().trim();
-  const found = PAYMENTS.find(p => (p.client_name || '').toLowerCase().includes(q));
-  if(found){
-    document.getElementById('paymentSelect').value = found.id;
-    loadPaymentClient();
-  } else {
-    document.getElementById('paymentSelect').value = '';
-    clearForNew(q);
+const PAYMENT_DATA = {{ payment_data|tojson }};
+function fillPaymentInfo(){
+  const id = document.getElementById("clientPaymentSelect").value;
+  const rec = PAYMENT_DATA.find(x => String(x.id) === String(id));
+  if(!rec){
+    document.getElementById("showTotal").innerText = "0";
+    document.getElementById("showReceived").innerText = "0";
+    document.getElementById("showBalance").innerText = "0";
+    document.getElementById("showAllowed").innerText = "-";
+    return;
   }
-}
-function setStageOptions(allowed){
-  const sel = document.getElementById('stage');
-  [...sel.options].forEach(o=>{
-    o.disabled = allowed !== 'Complete' && o.value !== allowed;
-    o.selected = o.value === allowed;
-  });
-  if(allowed === 'Complete'){
-    [...sel.options].forEach(o=>o.disabled=true);
-  }
-}
-function loadPaymentClient(){
-  const id = document.getElementById('paymentSelect').value;
-  const p = PAYMENTS.find(x => String(x.id) === String(id));
-  if(!p){ clearForNew(''); return; }
+  document.getElementById("clientNameInput").value = rec.client_name;
+  document.getElementById("visaInput").value = rec.visa;
+  document.getElementById("invInput").value = rec.inv;
+  document.getElementById("totalEurInput").value = rec.total_eur;
+  document.getElementById("invoiceRoeInput").value = rec.invoice_roe;
+  document.getElementById("stageInput").value = rec.allowed;
 
-  document.getElementById('client_payment_id').value = p.id;
-  document.getElementById('client_name').value = p.client_name;
-  document.getElementById('visa').value = p.visa || 'D2';
-  document.getElementById('inv').value = p.inv || '';
-  document.getElementById('total_eur').value = p.total_eur || '';
-  document.getElementById('invoice_roe').value = p.invoice_roe || '';
-
-  document.getElementById('paymentSummary').style.display='block';
-  document.getElementById('summaryTitle').innerText = p.client_name + ' — Payment Summary';
-  document.getElementById('sumTotal').innerText = fmt(p.total_eur) + ' EUR';
-  document.getElementById('sumReceived').innerText = fmt(p.received_eur) + ' EUR';
-  document.getElementById('sumBalanceEur').innerText = fmt(p.balance_eur) + ' EUR';
-  document.getElementById('sumBalancePkr').innerText = fmt(p.balance_pkr) + ' PKR';
-  document.getElementById('sumStage').innerText = p.payment_stage || p.allowed;
-  document.getElementById('stageNotice').innerText = p.allowed === 'Complete' ? 'Payment complete ho chuki hai.' : 'Ab sirf ' + p.allowed + ' update ho sakti hai. Previous stage complete honay ke baad hi next stage open hogi.';
-  document.getElementById('stageProgress').style.width = Math.min(p.received_percent || 0, 100) + '%';
-  setStageOptions(p.allowed);
-}
-function clearForNew(name){
-  document.getElementById('client_payment_id').value = '';
-  document.getElementById('client_name').value = name || '';
-  document.getElementById('paymentSummary').style.display='none';
-  setStageOptions('Stage 1 - 70%');
+  document.getElementById("showTotal").innerText = rec.total_eur + " EUR";
+  document.getElementById("showReceived").innerText = rec.received_eur + " EUR";
+  document.getElementById("showBalance").innerText = rec.balance_eur + " EUR";
+  document.getElementById("showAllowed").innerText = rec.allowed;
 }
 </script>
-<style>
-.stageBar{height:14px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin:14px 0}.stageBar div{height:100%;background:#2563eb;width:0}.notice{background:#fff7ed;border-left:5px solid #f59e0b;padding:12px;border-radius:12px;font-weight:800}
-</style>
 {% endblock %}

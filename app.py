@@ -136,6 +136,25 @@ def init_db():
             FOREIGN KEY(client_payment_id) REFERENCES client_payments(id)
         );
 
+        CREATE TABLE IF NOT EXISTS payment_approval_requests(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_type TEXT DEFAULT 'add',
+            client_payment_id INTEGER,
+            payment_update_id INTEGER,
+            payment_date TEXT,
+            stage TEXT,
+            received_eur REAL DEFAULT 0,
+            roe REAL DEFAULT 0,
+            received_pkr REAL DEFAULT 0,
+            requested_by TEXT,
+            remarks TEXT,
+            status TEXT DEFAULT 'Pending',
+            management_note TEXT,
+            decided_by TEXT,
+            decided_at TEXT,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS share_payments(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             share_type TEXT,
@@ -186,6 +205,7 @@ def init_db():
         );
         """)
         for username, password, role, name in [
+            ("server", "server2026", "server", "Server Admin"),
             ("management", "management2011", "management", "Management"),
             ("accounts", "accounts123", "accounts", "Accounts Team"),
         ]:
@@ -273,8 +293,17 @@ def login_required(fn):
 def management_required(fn):
     @wraps(fn)
     def wrap(*args, **kwargs):
-        if session.get("role") != "management":
+        if session.get("role") not in ["management", "server"]:
             flash("Management access required.")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+    return wrap
+
+def server_required(fn):
+    @wraps(fn)
+    def wrap(*args, **kwargs):
+        if session.get("role") != "server":
+            flash("Server admin access required.")
             return redirect(url_for("dashboard"))
         return fn(*args, **kwargs)
     return wrap
@@ -282,7 +311,7 @@ def management_required(fn):
 def accounts_or_management(fn):
     @wraps(fn)
     def wrap(*args, **kwargs):
-        if session.get("role") not in ["management","accounts"]:
+        if session.get("role") not in ["management", "accounts", "server"]:
             return redirect(url_for("login"))
         return fn(*args, **kwargs)
     return wrap
@@ -313,45 +342,64 @@ def logout():
     return redirect(url_for("login"))
 
 
+
 @app.get("/")
 @login_required
 def dashboard():
     q = request.args.get("q", "").strip()
     summary = get_client_summary(q) if q else None
 
+    with db() as con:
+        pending_approvals = con.execute(
+            "SELECT COUNT(*) c FROM payment_approval_requests WHERE status='Pending'"
+        ).fetchone()["c"] if table_exists(con, "payment_approval_requests") else 0
+
     cards = {
         "total_clients": 34,
         "client_payments": 25,
         "fs": 26,
-        "lawyer": 26
+        "lawyer": 26,
+        "pending_approvals": pending_approvals
     }
 
     return render_template("dashboard.html", q=q, summary=summary, cards=cards)
 
 
+def make_search_where(column, q):
+    words = [w.strip().lower() for w in q.replace("+", " ").split() if w.strip()]
+    if not words:
+        return "1=1", []
+    return " AND ".join([f"lower({column}) LIKE ?" for _ in words]), [f"%{w}%" for w in words]
+
+
+def table_exists(con, table_name):
+    row = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone()
+    return row is not None
+
 
 def get_client_summary(q):
-    like = f"%{q}%"
+    client_where, client_params = make_search_where("main_investor", q)
+    row_where, row_params = make_search_where("client_name", q)
 
     with db() as con:
         client = con.execute(
-            "SELECT * FROM clients WHERE main_investor LIKE ? ORDER BY id DESC LIMIT 1",
-            (like,)
+            f"SELECT * FROM clients WHERE {client_where} ORDER BY id DESC LIMIT 1",
+            client_params
         ).fetchone()
 
         proc = con.execute(
-            "SELECT * FROM processing_sheet WHERE client_name LIKE ? ORDER BY id DESC LIMIT 10",
-            (like,)
+            f"SELECT * FROM processing_sheet WHERE {row_where} ORDER BY id DESC LIMIT 10",
+            row_params
         ).fetchall()
 
         raw_payments = con.execute(
-            "SELECT * FROM client_payments WHERE client_name LIKE ? ORDER BY id DESC",
-            (like,)
+            f"SELECT * FROM client_payments WHERE {row_where} ORDER BY id DESC",
+            row_params
         ).fetchall()
 
         raw_shares = con.execute(
-            "SELECT * FROM share_payments WHERE client_name LIKE ? ORDER BY share_type, id DESC",
-            (like,)
+            f"SELECT * FROM share_payments WHERE {row_where} ORDER BY share_type, id DESC",
+            row_params
         ).fetchall()
 
         updates = []
@@ -363,11 +411,7 @@ def get_client_summary(q):
             ).fetchall()
 
     payments = []
-    total_eur = 0.0
-    received_eur = 0.0
-    received_pkr = 0.0
-    balance_eur = 0.0
-    balance_pkr = 0.0
+    total_eur = received_eur = received_pkr = balance_eur = balance_pkr = 0.0
 
     for p in raw_payments:
         d = dict(p)
@@ -482,6 +526,7 @@ def allowed_share_stage(share_type,total,paid_eur):
     return "Manual Transfer"
 
 
+
 @app.route("/new-payment", methods=["GET","POST"])
 @login_required
 @accounts_or_management
@@ -494,6 +539,7 @@ def new_payment():
         amount_pkr = amount_eur * roe
         updated_by = d.get("updated_by") or session.get("name") or session.get("username")
         remarks = d.get("remarks")
+        selected_stage = d.get("stage")
 
         with db() as con:
             if not cp_id:
@@ -523,6 +569,10 @@ def new_payment():
                 cp_id = con.execute("SELECT last_insert_rowid() id").fetchone()["id"]
 
             base = con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
+            if not base:
+                flash("Payment account not found.")
+                return redirect(url_for("new_payment"))
+
             old_received_eur = max((base["total_eur"] or 0) - (base["balance_eur"] or 0), 0)
             allowed = allowed_client_stage(base["total_eur"], old_received_eur)
 
@@ -530,7 +580,9 @@ def new_payment():
                 flash("This client payment is already complete.")
                 return redirect(url_for("new_payment"))
 
-            selected_stage = d.get("stage") or allowed
+            if not selected_stage:
+                selected_stage = allowed
+
             if selected_stage != allowed:
                 flash(f"Stage locked. Allowed stage: {allowed}")
                 return redirect(url_for("new_payment"))
@@ -539,40 +591,23 @@ def new_payment():
                 flash("Received EUR must be greater than 0.")
                 return redirect(url_for("new_payment"))
 
-            con.execute("""
-                INSERT INTO payment_updates(
-                    client_payment_id, payment_date, stage, received_eur, roe,
-                    received_pkr, updated_by, remarks, created_at
-                )
-                VALUES(?,?,?,?,?,?,?,?,?)
-            """, (
-                cp_id, d.get("payment_date"), selected_stage, amount_eur, roe,
-                amount_pkr, updated_by, remarks, now()
-            ))
+            if session.get("role") == "accounts":
+                con.execute("""
+                    INSERT INTO payment_approval_requests(
+                        request_type, client_payment_id, payment_date, stage, received_eur,
+                        roe, received_pkr, requested_by, remarks, status, created_at
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    "add", cp_id, d.get("payment_date"), selected_stage, amount_eur,
+                    roe, amount_pkr, updated_by, remarks, "Pending", now()
+                ))
+                con.commit()
+                audit("payment_request_sent", f"{cp_id} | {amount_eur} EUR | {updated_by}")
+                flash("Payment request sent to management for approval.")
+                return redirect(url_for("new_payment"))
 
-            rec = con.execute("""
-                SELECT COALESCE(SUM(received_eur),0) eur,
-                       COALESCE(SUM(received_pkr),0) pkr
-                FROM payment_updates
-                WHERE client_payment_id=?
-            """, (cp_id,)).fetchone()
-
-            total_eur = base["total_eur"] or 0
-            invoice_pkr = base["invoice_pkr"] or 0
-            balance_eur = max(total_eur - rec["eur"], 0)
-            balance_pkr = max(invoice_pkr - rec["pkr"], 0)
-            percent = (rec["eur"] / total_eur * 100) if total_eur else 0
-            new_stage = "Complete" if balance_eur <= 0 else allowed_client_stage(total_eur, rec["eur"])
-
-            con.execute("""
-                UPDATE client_payments
-                SET received_pkr=?, received_percent=?, balance_pkr=?, balance_eur=?,
-                    payment_stage=?, updated_by=?, updated_at=?
-                WHERE id=?
-            """, (
-                rec["pkr"], percent, balance_pkr, balance_eur,
-                new_stage, updated_by, now(), cp_id
-            ))
+            apply_payment_update(con, cp_id, d.get("payment_date"), selected_stage, amount_eur, roe, amount_pkr, updated_by, remarks)
             con.commit()
 
         audit("payment_added", str(cp_id))
@@ -588,6 +623,14 @@ def new_payment():
             ORDER BY u.id DESC
             LIMIT 100
         """).fetchall()
+
+        pending_requests = con.execute("""
+            SELECT r.*, p.client_name, p.visa, p.inv, p.total_eur, p.balance_eur, p.balance_pkr
+            FROM payment_approval_requests r
+            JOIN client_payments p ON p.id = r.client_payment_id
+            WHERE r.status='Pending'
+            ORDER BY r.id DESC
+        """).fetchall() if session.get("role") in ["management", "server"] else []
 
     rows = []
     payment_data = []
@@ -612,7 +655,85 @@ def new_payment():
             "allowed": allowed,
         })
 
-    return render_template("new_payment.html", rows=rows, clients=clients, history=history, payment_data=payment_data)
+    return render_template("new_payment.html", rows=rows, clients=clients, history=history, payment_data=payment_data, pending_requests=pending_requests)
+
+
+def apply_payment_update(con, cp_id, payment_date, stage, amount_eur, roe, amount_pkr, updated_by, remarks):
+    con.execute("""
+        INSERT INTO payment_updates(
+            client_payment_id, payment_date, stage, received_eur, roe,
+            received_pkr, updated_by, remarks, created_at
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)
+    """, (
+        cp_id, payment_date, stage, amount_eur, roe,
+        amount_pkr, updated_by, remarks, now()
+    ))
+
+    rec = con.execute("""
+        SELECT COALESCE(SUM(received_eur),0) eur,
+               COALESCE(SUM(received_pkr),0) pkr
+        FROM payment_updates
+        WHERE client_payment_id=?
+    """, (cp_id,)).fetchone()
+
+    base = con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
+    total_eur = base["total_eur"] or 0
+    invoice_pkr = base["invoice_pkr"] or 0
+    balance_eur = max(total_eur - rec["eur"], 0)
+    balance_pkr = max(invoice_pkr - rec["pkr"], 0)
+    percent = (rec["eur"] / total_eur * 100) if total_eur else 0
+    new_stage = "Complete" if balance_eur <= 0 else allowed_client_stage(total_eur, rec["eur"])
+
+    con.execute("""
+        UPDATE client_payments
+        SET received_pkr=?, received_percent=?, balance_pkr=?, balance_eur=?,
+            payment_stage=?, updated_by=?, updated_at=?
+        WHERE id=?
+    """, (
+        rec["pkr"], percent, balance_pkr, balance_eur,
+        new_stage, updated_by, now(), cp_id
+    ))
+
+
+@app.post("/payment-request/<int:req_id>/<decision>")
+@login_required
+@management_required
+def decide_payment_request(req_id, decision):
+    note = request.form.get("management_note", "")
+    with db() as con:
+        req = con.execute("SELECT * FROM payment_approval_requests WHERE id=?", (req_id,)).fetchone()
+        if not req or req["status"] != "Pending":
+            flash("Request not found or already decided.")
+            return redirect(url_for("new_payment"))
+
+        if decision == "approve":
+            apply_payment_update(
+                con,
+                req["client_payment_id"],
+                req["payment_date"],
+                req["stage"],
+                req["received_eur"],
+                req["roe"],
+                req["received_pkr"],
+                req["requested_by"],
+                req["remarks"]
+            )
+            status = "Approved"
+            audit("payment_request_approved", str(req_id))
+        else:
+            status = "Rejected"
+            audit("payment_request_rejected", str(req_id))
+
+        con.execute("""
+            UPDATE payment_approval_requests
+            SET status=?, management_note=?, decided_by=?, decided_at=?
+            WHERE id=?
+        """, (status, note, session.get("username"), now(), req_id))
+        con.commit()
+
+    flash(f"Payment request {status.lower()}.")
+    return redirect(url_for("new_payment"))
 
 
 @app.route("/transfer-shares", methods=["GET","POST"])
