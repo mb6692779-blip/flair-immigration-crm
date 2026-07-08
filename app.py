@@ -385,17 +385,54 @@ def dashboard():
 
 def get_client_summary(q):
     like = f"%{q}%"
+
     with db() as con:
-        client = con.execute("SELECT * FROM clients WHERE main_investor LIKE ? ORDER BY id DESC LIMIT 1", (like,)).fetchone()
-        proc = con.execute("SELECT * FROM processing_sheet WHERE client_name LIKE ? ORDER BY id DESC LIMIT 10", (like,)).fetchall()
-        pays = con.execute("SELECT * FROM client_payments WHERE client_name LIKE ? ORDER BY id DESC", (like,)).fetchall()
-        shares = con.execute("SELECT * FROM share_payments WHERE client_name LIKE ? ORDER BY share_type, id DESC", (like,)).fetchall()
+        client = con.execute(
+            "SELECT * FROM clients WHERE main_investor LIKE ? ORDER BY id DESC LIMIT 1",
+            (like,)
+        ).fetchone()
+
+        proc = con.execute(
+            "SELECT * FROM processing_sheet WHERE client_name LIKE ? ORDER BY id DESC LIMIT 10",
+            (like,)
+        ).fetchall()
+
+        pays = con.execute(
+            "SELECT * FROM client_payments WHERE client_name LIKE ? ORDER BY id DESC",
+            (like,)
+        ).fetchall()
+
+        raw_shares = con.execute(
+            "SELECT * FROM share_payments WHERE client_name LIKE ? ORDER BY share_type, id DESC",
+            (like,)
+        ).fetchall()
+
+        shares = []
+        for r in raw_shares:
+            d = dict(r)
+            d["total_eur"] = d.get("total_eur", d.get("total_share", 0)) or 0
+            d["paid_pkr"] = d.get("paid_pkr", d.get("transfer_pkr", 0)) or 0
+            d["paid_percent"] = d.get("paid_percent", 0) or 0
+            d["balance_eur"] = d.get("balance_eur", 0) or 0
+            d["balance_pkr"] = d.get("balance_pkr", 0) or 0
+            d["status"] = d.get("status", "Pending") or "Pending"
+            shares.append(d)
+
         updates = []
         if pays:
             ids = [str(p["id"]) for p in pays]
-            updates = con.execute(f"SELECT * FROM payment_updates WHERE client_payment_id IN ({','.join(['?']*len(ids))}) ORDER BY id DESC", ids).fetchall()
-    return {"client": client, "processing": proc, "payments": pays, "shares": shares, "updates": updates}
+            updates = con.execute(
+                f"SELECT * FROM payment_updates WHERE client_payment_id IN ({','.join(['?']*len(ids))}) ORDER BY id DESC",
+                ids
+            ).fetchall()
 
+    return {
+        "client": client,
+        "processing": proc,
+        "payments": pays,
+        "shares": shares,
+        "updates": updates
+    }
 @app.route("/add-client", methods=["GET","POST"])
 @login_required
 @management_required
