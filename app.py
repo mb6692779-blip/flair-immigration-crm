@@ -503,6 +503,9 @@ def new_payment():
                 if not client_name:
                     flash("Client name required.")
                     return redirect(url_for("new_payment"))
+                if total_eur <= 0:
+                    flash("Total EUR required for new client payment account.")
+                    return redirect(url_for("new_payment"))
 
                 con.execute("""
                     INSERT INTO client_payments(
@@ -527,7 +530,7 @@ def new_payment():
                 flash("This client payment is already complete.")
                 return redirect(url_for("new_payment"))
 
-            selected_stage = d.get("stage")
+            selected_stage = d.get("stage") or allowed
             if selected_stage != allowed:
                 flash(f"Stage locked. Allowed stage: {allowed}")
                 return redirect(url_for("new_payment"))
@@ -587,15 +590,29 @@ def new_payment():
         """).fetchall()
 
     rows = []
+    payment_data = []
     for a in accounts:
         old_received_eur = max((a["total_eur"] or 0) - (a["balance_eur"] or 0), 0)
-        rows.append({
-            "a": a,
-            "received_eur": old_received_eur,
-            "allowed": allowed_client_stage(a["total_eur"], old_received_eur)
+        allowed = allowed_client_stage(a["total_eur"], old_received_eur)
+        rows.append({"a": a, "received_eur": old_received_eur, "allowed": allowed})
+        payment_data.append({
+            "id": a["id"],
+            "client_name": a["client_name"] or "",
+            "visa": a["visa"] or "",
+            "inv": a["inv"] or "",
+            "total_eur": safe_float(a["total_eur"]),
+            "invoice_roe": safe_float(a["roe_invoice"]),
+            "invoice_pkr": safe_float(a["invoice_pkr"]),
+            "received_eur": safe_float(old_received_eur),
+            "received_pkr": safe_float(a["received_pkr"]),
+            "received_percent": safe_float(a["received_percent"]),
+            "balance_eur": safe_float(a["balance_eur"]),
+            "balance_pkr": safe_float(a["balance_pkr"]),
+            "payment_stage": a["payment_stage"] or "Pending",
+            "allowed": allowed,
         })
 
-    return render_template("new_payment.html", rows=rows, clients=clients, history=history)
+    return render_template("new_payment.html", rows=rows, clients=clients, history=history, payment_data=payment_data)
 
 
 @app.route("/transfer-shares", methods=["GET","POST"])
