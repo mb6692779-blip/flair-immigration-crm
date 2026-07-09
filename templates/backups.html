@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Database Backups</h2>
+<div class="panel">
+  <form method="post" action="{{ url_for('create_backup_now') }}">
+    <button>Create Backup Now</button>
+  </form>
+</div>
+<div class="panel">
+  <h3>Available Backups</h3>
+  <table>
+    <tr><th>File</th><th>Size</th><th>Modified</th><th>Download</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.name }}</td>
+      <td>{{ r.size }}</td>
+      <td>{{ r.modified }}</td>
+      <td><a href="{{ url_for('download_backup_file', name=r.name) }}">Download</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

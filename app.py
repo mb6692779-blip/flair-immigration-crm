@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, sqlite3, csv, io
+import json, os, sqlite3, csv, io, shutil
 from datetime import datetime
 from pathlib import Path
 from functools import wraps
@@ -26,8 +26,12 @@ CLIENT_STAGES = PAYMENT_STAGES
 SHARE_TYPES = ["FS Lisbon","Migration Lawyer","Other Partner"]
 
 def db():
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA synchronous = NORMAL")
+    con.execute("PRAGMA busy_timeout = 30000")
     return con
 
 def now():
@@ -283,16 +287,44 @@ def make_search_where(column, q):
         return "1=1", []
     return " AND ".join([f"lower({column}) LIKE ?" for _ in words]), [f"%{w}%" for w in words]
 
+
 def backup_database_file(reason="manual"):
     try:
+        BACKUP_DIR.mkdir(exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = BACKUP_DIR / f"db_backup_{reason}_{stamp}.sqlite"
         if DB_PATH.exists():
-            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            target = BACKUP_DIR / f"db_backup_{reason}_{stamp}.sqlite"
-            target.write_bytes(DB_PATH.read_bytes())
+            shutil.copy2(DB_PATH, target)
+            wal = Path(str(DB_PATH) + "-wal")
+            shm = Path(str(DB_PATH) + "-shm")
+            if wal.exists():
+                shutil.copy2(wal, BACKUP_DIR / f"db_backup_{reason}_{stamp}.sqlite-wal")
+            if shm.exists():
+                shutil.copy2(shm, BACKUP_DIR / f"db_backup_{reason}_{stamp}.sqlite-shm")
             return str(target)
-    except Exception:
-        pass
+    except Exception as e:
+        print("Backup failed:", e)
     return ""
+
+def cleanup_old_backups(keep=30):
+    try:
+        backups = sorted(BACKUP_DIR.glob("db_backup_*.sqlite"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in backups[keep:]:
+            old.unlink(missing_ok=True)
+            Path(str(old) + "-wal").unlink(missing_ok=True)
+            Path(str(old) + "-shm").unlink(missing_ok=True)
+    except Exception as e:
+        print("Backup cleanup failed:", e)
+
+def daily_backup_once():
+    marker = BACKUP_DIR / ".last_daily_backup"
+    today = datetime.now().strftime("%Y-%m-%d")
+    if marker.exists() and marker.read_text(encoding="utf-8").strip() == today:
+        return
+    backup_database_file("daily")
+    cleanup_old_backups(keep=30)
+    marker.write_text(today, encoding="utf-8")
+
 
 def restore_preloaded_exact_once(force=False):
     seed_file = APP_DIR / "seed_data" / "preloaded_exact.json"
@@ -461,13 +493,67 @@ def add_client():
     return render_template("add_client.html")
 
 
-def allowed_client_stage(total, received_eur):
-    total=float(total or 0); rec=float(received_eur or 0)
-    if total <= 0: return "Stage 1 - 70%"
-    if rec < total*0.70: return "Stage 1 - 70%"
-    if rec < total*0.85: return "Stage 2 - 15%"
-    if rec < total: return "Stage 3 - 15%"
+def payment_stage_targets(total):
+    total = safe_float(total)
+    return {
+        "Stage 1 - 70%": round(total * 0.70, 6),
+        "Stage 2 - 15%": round(total * 0.15, 6),
+        "Stage 3 - 15%": round(total * 0.15, 6),
+    }
+
+def payment_stage_received(row, stage):
+    if stage == "Stage 1 - 70%":
+        return safe_float(row["stage1_eur"])
+    if stage == "Stage 2 - 15%":
+        return safe_float(row["stage2_eur"])
+    if stage == "Stage 3 - 15%":
+        return safe_float(row["stage3_eur"])
+    return 0.0
+
+def next_stage_from_existing(row):
+    total = safe_float(row["total_eur"])
+    if total <= 0:
+        return "Stage 1 - 70%"
+    if safe_float(row["balance_eur"]) <= 0:
+        return "Complete"
+    targets = payment_stage_targets(total)
+    if safe_float(row["stage1_eur"]) < targets["Stage 1 - 70%"]:
+        return "Stage 1 - 70%"
+    if safe_float(row["stage2_eur"]) < targets["Stage 2 - 15%"]:
+        return "Stage 2 - 15%"
+    if safe_float(row["stage3_eur"]) < targets["Stage 3 - 15%"]:
+        return "Stage 3 - 15%"
     return "Complete"
+
+def allowed_client_stage(total, received_eur):
+    total = safe_float(total)
+    rec = safe_float(received_eur)
+    if total <= 0:
+        return "Stage 1 - 70%"
+    if rec < total * 0.70:
+        return "Stage 1 - 70%"
+    if rec < total * 0.85:
+        return "Stage 2 - 15%"
+    if rec < total:
+        return "Stage 3 - 15%"
+    return "Complete"
+
+def validate_payment_request(base, stage, amount_eur):
+    allowed = next_stage_from_existing(base)
+    if allowed == "Complete":
+        return False, "This payment account is already complete.", allowed, 0
+    if stage != allowed:
+        return False, f"Stage locked. Allowed stage: {allowed}", allowed, 0
+    if amount_eur <= 0:
+        return False, "Received EUR must be greater than 0.", allowed, 0
+    targets = payment_stage_targets(base["total_eur"])
+    already = payment_stage_received(base, stage)
+    remaining_stage = max(targets[stage] - already, 0)
+    remaining_total = max(safe_float(base["balance_eur"]), 0)
+    max_allowed = min(remaining_stage, remaining_total)
+    if amount_eur > max_allowed + 0.0001:
+        return False, f"Amount exceeds allowed stage balance. Maximum allowed: {max_allowed:.2f} EUR", allowed, max_allowed
+    return True, "OK", allowed, max_allowed
 
 def allowed_share_stage(share_type,total,paid_eur):
     total=float(total or 0); paid=float(paid_eur or 0); st=share_type or ""
@@ -484,74 +570,235 @@ def allowed_share_stage(share_type,total,paid_eur):
 
 
 
+
 @app.route("/new-payment", methods=["GET","POST"])
 @login_required
 @accounts_or_management
 def new_payment():
     if request.method == "POST":
-        d=request.form; cp_id=d.get("client_payment_id")
-        amount_eur=safe_float(d.get("received_eur")); roe=safe_float(d.get("roe")); amount_pkr=amount_eur*roe
-        updated_by=d.get("updated_by") or session.get("name") or session.get("username")
-        remarks=d.get("remarks"); stage=d.get("stage")
-        with db() as con:
-            base=con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
-            if not base:
-                flash("Existing payment account select karo."); return redirect(url_for("new_payment"))
-            if amount_eur <= 0 or roe <= 0:
-                flash("Received EUR aur ROE required hain."); return redirect(url_for("new_payment"))
-            if session.get("role") == "accounts":
-                con.execute("""INSERT INTO payment_approval_requests(request_type, client_payment_id, payment_date, stage, received_eur, roe, received_pkr, requested_by, remarks, status, created_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)""", ("add", cp_id, d.get("payment_date"), stage, amount_eur, roe, amount_pkr, updated_by, remarks, "Pending", now()))
-                con.commit(); flash("Payment request management approval ke liye send ho gai."); return redirect(url_for("new_payment"))
-            apply_payment_update(con, cp_id, d.get("payment_date"), stage, amount_eur, roe, amount_pkr, updated_by, remarks); con.commit()
-        return redirect(url_for("new_payment"))
-    with db() as con:
-        accounts=con.execute("SELECT * FROM client_payments ORDER BY id").fetchall()
-        clients=con.execute("SELECT main_investor, visa_type FROM clients ORDER BY main_investor").fetchall()
-        history=con.execute("""SELECT u.*, p.client_name FROM payment_updates u JOIN client_payments p ON p.id = u.client_payment_id ORDER BY u.id DESC LIMIT 100""").fetchall()
-        pending_requests=con.execute("""SELECT r.*, p.client_name, p.visa, p.inv, p.total_eur, p.balance_eur, p.balance_pkr FROM payment_approval_requests r JOIN client_payments p ON p.id=r.client_payment_id WHERE r.status='Pending' ORDER BY r.id DESC""").fetchall() if session.get("role") in ["management","server"] else []
-    rows=[]; payment_data=[]
-    for a in accounts:
-        received_eur=safe_float(a["stage1_eur"])+safe_float(a["stage2_eur"])+safe_float(a["stage3_eur"]); allowed=next_stage_from_existing(a)
-        rows.append({"a":a,"received_eur":received_eur,"allowed":allowed})
-        payment_data.append({"id":a["id"],"client_name":a["client_name"] or "","visa":a["visa"] or "","inv":a["inv"] or "","total_eur":safe_float(a["total_eur"]),"invoice_pkr":safe_float(a["invoice_pkr"]),"stage1_eur":safe_float(a["stage1_eur"]),"stage2_eur":safe_float(a["stage2_eur"]),"stage3_eur":safe_float(a["stage3_eur"]),"received_eur":received_eur,"received_pkr":safe_float(a["received_pkr"]),"received_percent":safe_float(a["received_percent"]),"balance_eur":safe_float(a["balance_eur"]),"balance_pkr":safe_float(a["balance_pkr"]),"payment_stage":a["payment_stage"] or "Pending","allowed":allowed})
-    return render_template("new_payment.html", rows=rows, clients=clients, history=history, payment_data=payment_data, pending_requests=pending_requests)
+        d = request.form
+        cp_id = d.get("client_payment_id")
+        amount_eur = safe_float(d.get("received_eur"))
+        roe = safe_float(d.get("roe"))
+        amount_pkr = amount_eur * roe
+        updated_by = d.get("updated_by") or session.get("name") or session.get("username")
+        remarks = d.get("remarks")
+        stage = d.get("stage")
 
-def next_stage_from_existing(row):
-    if safe_float(row["balance_eur"]) <= 0:
-        return "Complete"
-    if not safe_float(row["stage1_eur"]): return "Stage 1 - 70%"
-    if not safe_float(row["stage2_eur"]): return "Stage 2 - 15%"
-    return "Stage 3 - 15%"
+        with db() as con:
+            base = con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
+            if not base:
+                flash("Existing payment account select karo.")
+                return redirect(url_for("new_payment"))
+
+            ok, msg, allowed, max_allowed = validate_payment_request(base, stage, amount_eur)
+            if not ok:
+                flash(msg)
+                return redirect(url_for("new_payment"))
+
+            if roe <= 0:
+                flash("Payment ROE required hai.")
+                return redirect(url_for("new_payment"))
+
+            if session.get("role") == "accounts":
+                con.execute("""
+                    INSERT INTO payment_approval_requests(
+                        request_type, client_payment_id, payment_date, stage, received_eur,
+                        roe, received_pkr, requested_by, remarks, status, created_at
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    "add", cp_id, d.get("payment_date"), stage, amount_eur,
+                    roe, amount_pkr, updated_by, remarks, "Pending", now()
+                ))
+                con.commit()
+                audit("payment_request_sent", f"{base['client_name']} | {stage} | {amount_eur} EUR | {updated_by}")
+                flash("Payment request management approval ke liye send ho gai.")
+                return redirect(url_for("new_payment"))
+
+            apply_payment_update(con, cp_id, d.get("payment_date"), stage, amount_eur, roe, amount_pkr, updated_by, remarks)
+            con.commit()
+            audit("payment_added_direct", f"{base['client_name']} | {stage} | {amount_eur} EUR | {updated_by}")
+
+        return redirect(url_for("new_payment"))
+
+    with db() as con:
+        accounts = con.execute("SELECT * FROM client_payments ORDER BY id").fetchall()
+        clients = con.execute("SELECT main_investor, visa_type FROM clients ORDER BY main_investor").fetchall()
+        history = con.execute("""
+            SELECT u.*, p.client_name
+            FROM payment_updates u
+            JOIN client_payments p ON p.id = u.client_payment_id
+            ORDER BY u.id DESC
+            LIMIT 100
+        """).fetchall()
+        pending_requests = con.execute("""
+            SELECT r.*, p.client_name, p.visa, p.inv, p.total_eur, p.balance_eur, p.balance_pkr
+            FROM payment_approval_requests r
+            JOIN client_payments p ON p.id=r.client_payment_id
+            WHERE r.status='Pending'
+            ORDER BY r.id DESC
+        """).fetchall() if session.get("role") in ["management", "server"] else []
+
+    rows = []
+    payment_data = []
+    for a in accounts:
+        received_eur = safe_float(a["stage1_eur"]) + safe_float(a["stage2_eur"]) + safe_float(a["stage3_eur"])
+        allowed = next_stage_from_existing(a)
+        targets = payment_stage_targets(a["total_eur"])
+        stage_remaining = 0 if allowed == "Complete" else max(targets[allowed] - payment_stage_received(a, allowed), 0)
+        rows.append({"a": a, "received_eur": received_eur, "allowed": allowed, "stage_remaining": stage_remaining})
+        payment_data.append({
+            "id": a["id"],
+            "client_name": a["client_name"] or "",
+            "visa": a["visa"] or "",
+            "inv": a["inv"] or "",
+            "total_eur": safe_float(a["total_eur"]),
+            "invoice_pkr": safe_float(a["invoice_pkr"]),
+            "stage1_eur": safe_float(a["stage1_eur"]),
+            "stage2_eur": safe_float(a["stage2_eur"]),
+            "stage3_eur": safe_float(a["stage3_eur"]),
+            "stage1_target": targets["Stage 1 - 70%"],
+            "stage2_target": targets["Stage 2 - 15%"],
+            "stage3_target": targets["Stage 3 - 15%"],
+            "received_eur": received_eur,
+            "received_pkr": safe_float(a["received_pkr"]),
+            "received_percent": safe_float(a["received_percent"]),
+            "balance_eur": safe_float(a["balance_eur"]),
+            "balance_pkr": safe_float(a["balance_pkr"]),
+            "payment_stage": a["payment_stage"] or "Pending",
+            "allowed": allowed,
+            "stage_remaining": stage_remaining
+        })
+
+    return render_template(
+        "new_payment.html",
+        rows=rows,
+        clients=clients,
+        history=history,
+        payment_data=payment_data,
+        pending_requests=pending_requests
+    )
 
 def apply_payment_update(con, cp_id, payment_date, stage, amount_eur, roe, amount_pkr, updated_by, remarks):
-    base=con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
-    if not base: return
-    s1=safe_float(base["stage1_eur"]); r1=safe_float(base["stage1_roe"]); s2=safe_float(base["stage2_eur"]); r2=safe_float(base["stage2_roe"]); s3=safe_float(base["stage3_eur"]); r3=safe_float(base["stage3_roe"])
-    if "Stage 1" in (stage or ""): s1 += amount_eur; r1=roe
-    elif "Stage 2" in (stage or ""): s2 += amount_eur; r2=roe
-    else: s3 += amount_eur; r3=roe
-    received_eur=s1+s2+s3; received_pkr=safe_float(base["received_pkr"])+amount_pkr
-    balance_pkr=safe_float(base["balance_pkr"])-amount_pkr; balance_eur=max(safe_float(base["total_eur"])-received_eur,0)
-    percent=(received_eur/safe_float(base["total_eur"])*100) if safe_float(base["total_eur"]) else 0
-    pay_stage="Complete" if balance_eur<=0 else ("Stage 2 Paid" if s2 else "Stage 1 Paid" if s1 else "Not Paid")
-    con.execute("""INSERT INTO payment_updates(client_payment_id,payment_date,stage,received_eur,roe,received_pkr,updated_by,remarks,created_at) VALUES(?,?,?,?,?,?,?,?,?)""", (cp_id,payment_date,stage,amount_eur,roe,amount_pkr,updated_by,remarks,now()))
-    con.execute("""UPDATE client_payments SET stage1_eur=?, stage1_roe=?, stage2_eur=?, stage2_roe=?, stage3_eur=?, stage3_roe=?, received_pkr=?, received_percent=?, balance_pkr=?, balance_eur=?, payment_stage=?, remarks=?, updated_by=?, updated_at=? WHERE id=?""", (s1,r1,s2,r2,s3,r3,received_pkr,percent,balance_pkr,balance_eur,pay_stage,remarks or base["remarks"],updated_by,now(),cp_id))
+    backup_database_file("before_payment_update")
+    base = con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
+    if not base:
+        return
+
+    ok, msg, allowed, max_allowed = validate_payment_request(base, stage, amount_eur)
+    if not ok:
+        raise ValueError(msg)
+
+    s1 = safe_float(base["stage1_eur"])
+    r1 = safe_float(base["stage1_roe"])
+    s2 = safe_float(base["stage2_eur"])
+    r2 = safe_float(base["stage2_roe"])
+    s3 = safe_float(base["stage3_eur"])
+    r3 = safe_float(base["stage3_roe"])
+
+    if stage == "Stage 1 - 70%":
+        s1 += amount_eur
+        r1 = roe
+    elif stage == "Stage 2 - 15%":
+        s2 += amount_eur
+        r2 = roe
+    elif stage == "Stage 3 - 15%":
+        s3 += amount_eur
+        r3 = roe
+    else:
+        raise ValueError("Invalid payment stage")
+
+    received_eur = s1 + s2 + s3
+    total_eur = safe_float(base["total_eur"])
+    received_pkr = safe_float(base["received_pkr"]) + amount_pkr
+    balance_pkr = safe_float(base["balance_pkr"]) - amount_pkr
+    balance_eur = max(total_eur - received_eur, 0)
+    percent = (received_eur / total_eur * 100) if total_eur else 0
+
+    temp_row = dict(base)
+    temp_row["stage1_eur"] = s1
+    temp_row["stage2_eur"] = s2
+    temp_row["stage3_eur"] = s3
+    temp_row["balance_eur"] = balance_eur
+    next_stage = next_stage_from_existing(temp_row)
+    pay_stage = "Complete" if next_stage == "Complete" else next_stage.replace(" - ", " Pending ")
+
+    con.execute("""
+        INSERT INTO payment_updates(
+            client_payment_id, payment_date, stage, received_eur, roe,
+            received_pkr, updated_by, remarks, created_at
+        )
+        VALUES(?,?,?,?,?,?,?,?,?)
+    """, (cp_id, payment_date, stage, amount_eur, roe, amount_pkr, updated_by, remarks, now()))
+
+    con.execute("""
+        UPDATE client_payments
+        SET stage1_eur=?, stage1_roe=?, stage2_eur=?, stage2_roe=?,
+            stage3_eur=?, stage3_roe=?, received_pkr=?, received_percent=?,
+            balance_pkr=?, balance_eur=?, payment_stage=?, remarks=?,
+            updated_by=?, updated_at=?
+        WHERE id=?
+    """, (
+        s1, r1, s2, r2, s3, r3, received_pkr, percent,
+        balance_pkr, balance_eur, pay_stage, remarks or base["remarks"],
+        updated_by, now(), cp_id
+    ))
 
 @app.post("/payment-request/<int:req_id>/<decision>")
 @login_required
 @management_required
 def decide_payment_request(req_id, decision):
-    note=request.form.get("management_note","")
+    note = request.form.get("management_note", "")
     with db() as con:
-        req=con.execute("SELECT * FROM payment_approval_requests WHERE id=?", (req_id,)).fetchone()
+        req = con.execute("SELECT * FROM payment_approval_requests WHERE id=?", (req_id,)).fetchone()
         if not req or req["status"] != "Pending":
-            flash("Request not found or already decided."); return redirect(url_for("new_payment"))
+            flash("Request not found or already decided.")
+            return redirect(url_for("new_payment"))
+
+        base = con.execute("SELECT * FROM client_payments WHERE id=?", (req["client_payment_id"],)).fetchone()
+        if not base:
+            flash("Payment account not found.")
+            return redirect(url_for("new_payment"))
+
         if decision == "approve":
-            apply_payment_update(con, req["client_payment_id"], req["payment_date"], req["stage"], req["received_eur"], req["roe"], req["received_pkr"], req["requested_by"], req["remarks"]); status="Approved"
-        else: status="Rejected"
-        con.execute("UPDATE payment_approval_requests SET status=?, management_note=?, decided_by=?, decided_at=? WHERE id=?", (status,note,session.get("username"),now(),req_id)); con.commit()
-    flash(f"Payment request {status.lower()}."); return redirect(url_for("new_payment"))
+            ok, msg, allowed, max_allowed = validate_payment_request(base, req["stage"], req["received_eur"])
+            if not ok:
+                con.execute("""
+                    UPDATE payment_approval_requests
+                    SET status='Rejected', management_note=?, decided_by=?, decided_at=?
+                    WHERE id=?
+                """, (f"Auto rejected: {msg}", session.get("username"), now(), req_id))
+                con.commit()
+                flash(f"Request auto rejected: {msg}")
+                return redirect(url_for("new_payment"))
+
+            apply_payment_update(
+                con,
+                req["client_payment_id"],
+                req["payment_date"],
+                req["stage"],
+                req["received_eur"],
+                req["roe"],
+                req["received_pkr"],
+                req["requested_by"],
+                req["remarks"]
+            )
+            status = "Approved"
+            audit("payment_request_approved", f"{base['client_name']} | {req['stage']} | {req['received_eur']} EUR")
+        else:
+            status = "Rejected"
+            audit("payment_request_rejected", f"{base['client_name']} | {req['stage']} | {req['received_eur']} EUR")
+
+        con.execute("""
+            UPDATE payment_approval_requests
+            SET status=?, management_note=?, decided_by=?, decided_at=?
+            WHERE id=?
+        """, (status, note, session.get("username"), now(), req_id))
+        con.commit()
+
+    flash(f"Payment request {status.lower()}.")
+    return redirect(url_for("new_payment"))
 
 
 @app.route("/transfer-shares", methods=["GET","POST"])
@@ -687,13 +934,41 @@ def export_table(table):
 @login_required
 @management_required
 def backup():
-    data={}
+    sqlite_backup = backup_database_file("manual")
+    data = {}
     with db() as con:
-        for t in ["clients","processing_sheet","client_payments","share_payments","payment_updates","share_updates"]:
-            data[t] = [dict(r) for r in con.execute(f"SELECT * FROM {t}").fetchall()]
+        for t in ["clients","processing_sheet","client_payments","share_payments","payment_updates","share_updates","payment_approval_requests","audit_log"]:
+            if table_exists(con, t):
+                data[t] = [dict(r) for r in con.execute(f"SELECT * FROM {t}").fetchall()]
     path = BACKUP_DIR / f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    data["_sqlite_backup"] = sqlite_backup
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    audit("manual_backup", str(path))
     return send_file(path, as_attachment=True)
+
+
+
+@app.get("/backups")
+@login_required
+@management_required
+def backups_page():
+    files = sorted(BACKUP_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    rows = [{"name": f.name, "size": f.stat().st_size, "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")} for f in files if f.is_file()]
+    return render_template("backups.html", rows=rows)
+
+@app.get("/backups/download/<path:name>")
+@login_required
+@management_required
+def download_backup_file(name):
+    return send_from_directory(BACKUP_DIR, name, as_attachment=True)
+
+@app.post("/backups/create")
+@login_required
+@management_required
+def create_backup_now():
+    backup_database_file("manual_button")
+    audit("manual_sqlite_backup", session.get("username", ""))
+    return redirect(url_for("backups_page"))
 
 @app.get("/favicon.ico")
 def favicon():
@@ -701,7 +976,17 @@ def favicon():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True})
+    try:
+        with db() as con:
+            con.execute("SELECT 1").fetchone()
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return jsonify({
+        "ok": db_ok,
+        "database": str(DB_PATH),
+        "backups": len(list(BACKUP_DIR.glob("db_backup_*.sqlite")))
+    })
 
 if __name__ == "__main__":
     init_db()
