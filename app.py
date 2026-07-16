@@ -1067,6 +1067,195 @@ def create_backup_now():
     audit("manual_sqlite_backup", session.get("username", ""))
     return redirect(url_for("backups_page"))
 
+
+# === FLAIR LEAD MANAGEMENT V1 ===
+
+def ensure_lead_columns():
+    with db() as con:
+        if IS_POSTGRES:
+            rows = con.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='leads'
+            """).fetchall()
+            existing = {r["column_name"] for r in rows}
+        else:
+            rows = con.execute("PRAGMA table_info(leads)").fetchall()
+            existing = {r["name"] for r in rows}
+
+        required = {
+            "email": "TEXT",
+            "original_message": "TEXT",
+            "assigned_to": "TEXT",
+            "source_reference": "TEXT",
+            "converted_client_id": "INTEGER",
+            "converted_at": "TEXT",
+        }
+        for column, column_type in required.items():
+            if column not in existing:
+                con.execute(f"ALTER TABLE leads ADD COLUMN {column} {column_type}")
+        con.commit()
+
+
+@app.route("/leads", methods=["GET", "POST"])
+@login_required
+@management_required
+def leads_page():
+    ensure_lead_columns()
+    statuses = ["New Lead", "Contacted", "Qualified", "Follow-up", "Converted", "Lost"]
+
+    if request.method == "POST":
+        d = request.form
+        name_value = d.get("name", "").strip()
+        phone_value = d.get("phone", "").strip()
+        email_value = d.get("email", "").strip().lower()
+        if not name_value:
+            flash("Lead name is required.")
+            return redirect(url_for("leads_page"))
+
+        with db() as con:
+            duplicate = None
+            if phone_value:
+                duplicate = con.execute(
+                    "SELECT id,name FROM leads WHERE phone=? AND lead_status!='Converted' ORDER BY id DESC LIMIT 1",
+                    (phone_value,),
+                ).fetchone()
+            if not duplicate and email_value:
+                duplicate = con.execute(
+                    "SELECT id,name FROM leads WHERE lower(email)=? AND lead_status!='Converted' ORDER BY id DESC LIMIT 1",
+                    (email_value,),
+                ).fetchone()
+            if duplicate:
+                flash(f"Possible duplicate lead exists: #{duplicate['id']} {duplicate['name']}")
+                return redirect(url_for("leads_page"))
+
+            con.execute("""
+                INSERT INTO leads(
+                    lead_date,name,phone,email,city,source,country_interest,
+                    program_interest,lead_status,next_followup,remarks,
+                    original_message,assigned_to,source_reference,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                d.get("lead_date") or datetime.today().strftime("%Y-%m-%d"),
+                name_value, phone_value, email_value, d.get("city", "").strip(),
+                d.get("source", "Manual"), d.get("country_interest", "").strip(),
+                d.get("program_interest", "").strip(), d.get("lead_status", "New Lead"),
+                d.get("next_followup", ""), d.get("remarks", ""),
+                d.get("original_message", ""), d.get("assigned_to", ""),
+                d.get("source_reference", ""), now(), now(),
+            ))
+            con.commit()
+        audit("lead_added", f"{name_value} | {d.get('source','Manual')}")
+        flash("Lead saved successfully.")
+        return redirect(url_for("leads_page"))
+
+    q = request.args.get("q", "").strip()
+    status_filter = request.args.get("status", "").strip()
+    clauses = ["1=1"]
+    params = []
+    if q:
+        pattern = f"%{q.lower()}%"
+        clauses.append("(lower(name) LIKE ? OR lower(COALESCE(phone,'')) LIKE ? OR lower(COALESCE(email,'')) LIKE ? OR lower(COALESCE(program_interest,'')) LIKE ?)")
+        params.extend([pattern, pattern, pattern, pattern])
+    if status_filter:
+        clauses.append("lead_status=?")
+        params.append(status_filter)
+
+    with db() as con:
+        rows = con.execute(
+            f"SELECT * FROM leads WHERE {' AND '.join(clauses)} ORDER BY id DESC",
+            params,
+        ).fetchall()
+    return render_template("leads.html", rows=rows, statuses=statuses, q=q, status_filter=status_filter)
+
+
+@app.post("/leads/<int:lead_id>/update")
+@login_required
+@management_required
+def update_lead(lead_id):
+    ensure_lead_columns()
+    d = request.form
+    with db() as con:
+        lead = con.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if not lead:
+            flash("Lead not found.")
+            return redirect(url_for("leads_page"))
+        con.execute("""
+            UPDATE leads SET lead_status=?,next_followup=?,assigned_to=?,remarks=?,updated_at=?
+            WHERE id=?
+        """, (
+            d.get("lead_status", lead["lead_status"]),
+            d.get("next_followup", lead["next_followup"]),
+            d.get("assigned_to", lead["assigned_to"]),
+            d.get("remarks", lead["remarks"]), now(), lead_id,
+        ))
+        con.commit()
+    audit("lead_updated", str(lead_id))
+    flash("Lead updated successfully.")
+    return redirect(url_for("leads_page"))
+
+
+@app.post("/leads/<int:lead_id>/convert")
+@login_required
+@management_required
+def convert_lead_to_client(lead_id):
+    ensure_lead_columns()
+    with db() as con:
+        lead = con.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if not lead:
+            flash("Lead not found.")
+            return redirect(url_for("leads_page"))
+        if lead["converted_client_id"]:
+            flash(f"Lead already converted to client #{lead['converted_client_id']}.")
+            return redirect(url_for("leads_page"))
+
+        duplicate = con.execute(
+            "SELECT id FROM clients WHERE lower(main_investor)=? ORDER BY id DESC LIMIT 1",
+            ((lead["name"] or "").strip().lower(),),
+        ).fetchone()
+        if duplicate:
+            flash(f"A client with this name already exists: #{duplicate['id']}")
+            return redirect(url_for("leads_page"))
+
+        program = lead["program_interest"] or lead["country_interest"] or "Other"
+        start_date = lead["lead_date"] or datetime.today().strftime("%Y-%m-%d")
+        con.execute("""
+            INSERT INTO clients(
+                date,visa_type,section_type,group_size,main_investor,partner_names,
+                reference_type,reference_name,partner_office_name,director_name,
+                issue_status,issue_details,status,remarks,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            start_date, program, "Single", 1, lead["name"], "[]", "Other",
+            lead["source"] or "Lead", "", "", "No", "", "Active",
+            f"Converted from lead #{lead_id}. {lead['remarks'] or ''}".strip(), now(), now(),
+        ))
+        client_id = con.last_id()
+        con.execute("""
+            INSERT INTO processing_sheet(
+                client_name,program,processing_start_date,nif,personal_bank_account,
+                company_name,company_formation,company_bank_account,business_plan,
+                personal_funds_transferred,application_ready,funds_transfer,
+                application_submission,decision,status,delay,remarks,updated_by,
+                created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            lead["name"], program, start_date,
+            "Pending","Pending","Pending","Pending","Pending","Pending","Pending",
+            "Pending","Pending","Pending","Pending","Pending","Client end",
+            f"Converted from lead #{lead_id}", session.get("username"), now(), now(),
+        ))
+        con.execute("""
+            UPDATE leads SET lead_status='Converted',converted_client_id=?,converted_at=?,updated_at=?
+            WHERE id=?
+        """, (client_id, now(), now(), lead_id))
+        con.commit()
+    audit("lead_converted", f"lead={lead_id} client={client_id}")
+    flash(f"Lead converted successfully to client #{client_id}.")
+    return redirect(url_for("leads_page"))
+
+# === END FLAIR LEAD MANAGEMENT V1 ===
+
+
 @app.get("/favicon.ico")
 def favicon():
     return send_from_directory(APP_DIR/"static"/"images", "flair-logo.png")

@@ -1,28 +1,21 @@
-{% extends "base.html" %}
-{% block content %}
-<h2>Lead Management</h2>
-<div class="panel">
-<form method="post" class="gridForm">
-  <input name="lead_date" type="date">
-  <input name="name" placeholder="Lead Name" required>
-  <input name="phone" placeholder="Phone / WhatsApp">
-  <input name="city" placeholder="City">
-  <select name="source"><option>Facebook</option><option>Instagram</option><option>TikTok</option><option>Google</option><option>Website</option><option>Referral</option><option>Walk-in</option><option>Other</option></select>
-  <input name="country_interest" placeholder="Country Interested">
-  <input name="program_interest" placeholder="Program Interested">
-  <select name="lead_status"><option>New Lead</option><option>Contacted</option><option>Follow-up</option><option>Meeting Scheduled</option><option>Hot Lead</option><option>Cold Lead</option><option>Converted</option><option>Lost</option></select>
-  <input name="next_followup" type="date">
-  <textarea name="remarks" placeholder="Lead Remarks"></textarea>
-  <button>Add Lead</button>
-</form>
-</div>
-<div class="panel">
-<a class="export" href="{{ url_for('export_table', table='leads') }}">Export CSV</a>
-<table>
-<tr><th>ID</th><th>Date</th><th>Name</th><th>Phone</th><th>City</th><th>Source</th><th>Country</th><th>Program</th><th>Status</th><th>Follow-up</th><th>Remarks</th></tr>
-{% for r in rows %}
-<tr><td>{{ r.id }}</td><td>{{ r.lead_date }}</td><td>{{ r.name }}</td><td>{{ r.phone }}</td><td>{{ r.city }}</td><td>{{ r.source }}</td><td>{{ r.country_interest }}</td><td>{{ r.program_interest }}</td><td>{{ r.lead_status }}</td><td>{{ r.next_followup }}</td><td>{{ r.remarks }}</td></tr>
-{% endfor %}
-</table>
-</div>
-{% endblock %}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lead Management - Flair CRM</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>
+body{margin:0;padding:20px;background:#f4f7fb;font-family:Arial,sans-serif;color:#17233c}.wrap{max-width:1500px;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.top a{background:#14284b;color:#fff;padding:10px 15px;border-radius:8px;text-decoration:none}.panel{background:#fff;padding:20px;margin:16px 0;border-radius:14px;box-shadow:0 6px 22px rgba(0,0,0,.08)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}input,select,textarea,button{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ccd5e3;border-radius:8px}button{border:0;background:#2367e8;color:#fff;font-weight:700;cursor:pointer}.convert{background:#12834a}.flash{background:#fff2bf;padding:10px;border-radius:8px;margin:10px 0}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:1200px;font-size:13px}th,td{padding:9px;border-bottom:1px solid #e5e9f0;text-align:left;vertical-align:top}th{background:#edf3fc}.actions{display:grid;gap:6px;min-width:185px}small{color:#52627a}
+</style></head><body><div class="wrap">
+<div class="top"><h1>Lead Management</h1><a href="{{ url_for('dashboard') }}">Back to Dashboard</a></div>
+{% with messages = get_flashed_messages() %}{% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
+<div class="panel"><h2>Add New Lead</h2><form method="post"><div class="grid">
+<input type="date" name="lead_date"><input name="name" placeholder="Lead name *" required><input name="phone" placeholder="Phone / WhatsApp"><input type="email" name="email" placeholder="Email"><input name="city" placeholder="City">
+<select name="source"><option>Manual</option><option>WhatsApp</option><option>Email</option><option>Facebook</option><option>Instagram</option><option>LinkedIn</option><option>Website</option><option>Referral</option></select>
+<input name="country_interest" placeholder="Country interest"><input name="program_interest" placeholder="Program interest">
+<select name="lead_status">{% for s in statuses %}<option>{{ s }}</option>{% endfor %}</select><input type="date" name="next_followup"><input name="assigned_to" placeholder="Assigned to"><input name="source_reference" placeholder="Source reference"></div>
+<textarea name="original_message" rows="3" placeholder="Original inquiry or message" style="margin-top:10px"></textarea><textarea name="remarks" rows="2" placeholder="Remarks" style="margin-top:10px"></textarea><button type="submit" style="margin-top:10px">Save Lead</button></form></div>
+<div class="panel"><form method="get" class="grid"><input name="q" value="{{ q }}" placeholder="Search lead, phone, email or program"><select name="status"><option value="">All statuses</option>{% for s in statuses %}<option value="{{ s }}" {% if status_filter==s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select><button type="submit">Search</button></form></div>
+<div class="panel table-wrap"><table><thead><tr><th>ID</th><th>Date</th><th>Lead</th><th>Contact</th><th>Source</th><th>Interest</th><th>Status</th><th>Follow-up</th><th>Message</th><th>Actions</th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.id }}</td><td>{{ r.lead_date or '' }}</td><td><strong>{{ r.name }}</strong><br><small>{{ r.city or '' }}</small></td><td>{{ r.phone or '' }}<br>{{ r.email or '' }}</td><td>{{ r.source or '' }}<br><small>{{ r.source_reference or '' }}</small></td><td>{{ r.country_interest or '' }}<br>{{ r.program_interest or '' }}</td><td>{{ r.lead_status }}</td><td>{{ r.next_followup or '' }}<br><small>{{ r.assigned_to or '' }}</small></td><td>{{ (r.original_message or '')[:180] }}<br><small>{{ r.remarks or '' }}</small></td><td><div class="actions">
+<form method="post" action="{{ url_for('update_lead', lead_id=r.id) }}"><select name="lead_status">{% for s in statuses %}<option {% if r.lead_status==s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select><input type="date" name="next_followup" value="{{ r.next_followup or '' }}"><input name="assigned_to" value="{{ r.assigned_to or '' }}" placeholder="Assigned to"><input name="remarks" value="{{ r.remarks or '' }}" placeholder="Remarks"><button type="submit">Update Lead</button></form>
+{% if not r.converted_client_id %}<form method="post" action="{{ url_for('convert_lead_to_client', lead_id=r.id) }}" onsubmit="return confirm('Convert this lead to client?')"><button class="convert" type="submit">Convert to Client</button></form>{% else %}<strong>Client #{{ r.converted_client_id }}</strong>{% endif %}
+</div></td></tr>{% else %}<tr><td colspan="10">No leads found.</td></tr>{% endfor %}</tbody></table></div></div></body></html>
