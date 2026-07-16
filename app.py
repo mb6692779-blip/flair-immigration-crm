@@ -6,12 +6,27 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_file, send_from_directory
 from werkzeug.security import generate_password_hash, check_password_hash
 
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("DATABASE_PATH", APP_DIR / "flair_crm_server.db"))
 SEED_PATH = APP_DIR / "seed_data" / "seed.json"
 IMPORT_MARKER = APP_DIR / "seed_data" / ".imported"
 BACKUP_DIR = APP_DIR / "backups"
 BACKUP_DIR.mkdir(exist_ok=True)
+
+# Railway automatically injects DATABASE_URL when a Postgres plugin is attached.
+# If it's present we use Postgres (permanent storage); otherwise we fall back to
+# the local SQLite file (handy for testing on Windows via RUN_CRM_WINDOWS.bat).
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+IS_POSTGRES = bool(DATABASE_URL) and psycopg2 is not None
+if os.environ.get("DATABASE_URL") and psycopg2 is None:
+    print("WARNING: DATABASE_URL is set but psycopg2 is not installed — falling back to SQLite. "
+          "Add 'psycopg2-binary' to requirements.txt.")
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "flair-crm-secret-change-in-railway")
@@ -25,14 +40,65 @@ PAYMENT_STAGES = ["Stage 1 - 70%","Stage 2 - 15%","Stage 3 - 15%"]
 CLIENT_STAGES = PAYMENT_STAGES
 SHARE_TYPES = ["FS Lisbon","Migration Lawyer","Other Partner"]
 
+class DBConnection:
+    """Wraps either a sqlite3 or psycopg2 connection so the rest of the app
+    can keep writing `con.execute("...WHERE x=?", (val,))` and
+    `with db() as con:` unchanged, regardless of which database is active."""
+
+    def __init__(self):
+        if IS_POSTGRES:
+            self._con = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            self._con = sqlite3.connect(DB_PATH, timeout=30)
+            self._con.row_factory = sqlite3.Row
+            self._con.execute("PRAGMA foreign_keys = ON")
+            self._con.execute("PRAGMA journal_mode = WAL")
+            self._con.execute("PRAGMA synchronous = NORMAL")
+            self._con.execute("PRAGMA busy_timeout = 30000")
+
+    def execute(self, sql, params=()):
+        if IS_POSTGRES:
+            sql = sql.replace("?", "%s")
+        cur = self._con.cursor()
+        cur.execute(sql, params)
+        return cur
+
+    def executescript(self, sql):
+        if IS_POSTGRES:
+            cur = self._con.cursor()
+            cur.execute(sql)
+        else:
+            self._con.executescript(sql)
+
+    def last_id(self):
+        """Equivalent of SQLite's last_insert_rowid(), works right after an INSERT."""
+        if IS_POSTGRES:
+            return self.execute("SELECT lastval() AS id").fetchone()["id"]
+        return self.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+    def commit(self):
+        self._con.commit()
+
+    def rollback(self):
+        self._con.rollback()
+
+    def close(self):
+        self._con.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            self._con.commit()
+        else:
+            self._con.rollback()
+        self._con.close()
+        return False
+
+
 def db():
-    con = sqlite3.connect(DB_PATH, timeout=30)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    con.execute("PRAGMA journal_mode = WAL")
-    con.execute("PRAGMA synchronous = NORMAL")
-    con.execute("PRAGMA busy_timeout = 30000")
-    return con
+    return DBConnection()
 
 def now():
     return datetime.now().isoformat(timespec="seconds")
@@ -45,7 +111,7 @@ def safe_float(v):
 
 def init_db():
     with db() as con:
-        con.executescript("""
+        schema_sql = """
         CREATE TABLE IF NOT EXISTS users(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -206,7 +272,26 @@ def init_db():
             details TEXT,
             created_at TEXT
         );
-        """)
+
+        CREATE TABLE IF NOT EXISTS leads(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_date TEXT,
+            name TEXT NOT NULL,
+            phone TEXT,
+            city TEXT,
+            source TEXT,
+            country_interest TEXT,
+            program_interest TEXT,
+            lead_status TEXT DEFAULT 'New Lead',
+            next_followup TEXT,
+            remarks TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+        if IS_POSTGRES:
+            schema_sql = schema_sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        con.executescript(schema_sql)
         for username, password, role, name in [
             ("server", "server2026", "server", "Server Admin"),
             ("management", "management2011", "management", "Management"),
@@ -279,6 +364,9 @@ def parse_percent(v):
         return 0.0
 
 def table_exists(con, table_name):
+    if IS_POSTGRES:
+        row = con.execute("SELECT table_name FROM information_schema.tables WHERE table_name=?", (table_name,)).fetchone()
+        return row is not None
     return con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone() is not None
 
 def make_search_where(column, q):
@@ -289,6 +377,10 @@ def make_search_where(column, q):
 
 
 def backup_database_file(reason="manual"):
+    if IS_POSTGRES:
+        # Nothing to copy — there's no local .db file on Postgres.
+        # The JSON export in the /backup route is the real backup for this mode.
+        return ""
     try:
         BACKUP_DIR.mkdir(exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -819,7 +911,7 @@ def transfer_shares():
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                     d.get("share_type"), d.get("transfer_date"), d.get("visa"), d.get("inv"), d.get("client_name"), inv_roe, total_eur, total_eur*inv_roe, 0, 0, total_eur*inv_roe, total_eur, "Pending", d.get("remarks"), d.get("updated_by"), now(), now()
                 ))
-                sp_id = con.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+                sp_id = con.last_id()
             base_check = con.execute("SELECT * FROM share_payments WHERE id=?", (sp_id,)).fetchone()
             allowed = allowed_share_stage(base_check["share_type"], base_check["total_eur"], (base_check["total_eur"] or 0) - (base_check["balance_eur"] or 0))
             if allowed != "Complete" and d.get("stage") != allowed:
@@ -914,7 +1006,7 @@ def payment_history():
 @app.get("/export/<table>")
 @login_required
 def export_table(table):
-    allowed = {"clients","processing_sheet","client_payments","share_payments","payment_updates","share_updates"}
+    allowed = {"clients","processing_sheet","client_payments","share_payments","payment_updates","share_updates","leads"}
     if table not in allowed:
         return "Invalid", 400
     if session.get("role") == "accounts" and table not in {"client_payments","share_payments","payment_updates","share_updates"}:
@@ -984,7 +1076,8 @@ def health():
         db_ok = False
     return jsonify({
         "ok": db_ok,
-        "database": str(DB_PATH),
+        "database_backend": "postgres" if IS_POSTGRES else "sqlite",
+        "database": "postgres (Railway)" if IS_POSTGRES else str(DB_PATH),
         "backups": len(list(BACKUP_DIR.glob("db_backup_*.sqlite")))
     })
 
