@@ -968,9 +968,29 @@ def processing_sheet():
 def payments_sheet():
     with db() as con:
         payments = con.execute("SELECT * FROM client_payments ORDER BY id").fetchall()
-        fs = con.execute("SELECT * FROM share_payments WHERE share_type LIKE '%FS%' ORDER BY id").fetchall()
-        lawyer = con.execute("SELECT * FROM share_payments WHERE share_type LIKE '%Lawyer%' OR share_type LIKE '%Migration%' ORDER BY id").fetchall()
-        other = con.execute("SELECT * FROM share_payments WHERE share_type NOT LIKE '%FS%' AND share_type NOT LIKE '%Lawyer%' AND share_type NOT LIKE '%Migration%' ORDER BY share_type,id").fetchall()
+
+        # PostgreSQL-safe parameterized share filters.
+        # Literal percent signs inside psycopg2 SQL strings can be interpreted
+        # as formatting placeholders and cause tuple index errors.
+        fs = con.execute(
+            "SELECT * FROM share_payments WHERE share_type LIKE ? ORDER BY id",
+            ("%FS%",)
+        ).fetchall()
+
+        lawyer = con.execute(
+            "SELECT * FROM share_payments "
+            "WHERE share_type LIKE ? OR share_type LIKE ? ORDER BY id",
+            ("%Lawyer%", "%Migration%")
+        ).fetchall()
+
+        other = con.execute(
+            "SELECT * FROM share_payments "
+            "WHERE share_type NOT LIKE ? "
+            "AND share_type NOT LIKE ? "
+            "AND share_type NOT LIKE ? "
+            "ORDER BY share_type,id",
+            ("%FS%", "%Lawyer%", "%Migration%")
+        ).fetchall()
     return render_template("payments_sheet.html", payments=payments, fs=fs, lawyer=lawyer, other=other)
 
 
