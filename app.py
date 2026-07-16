@@ -303,6 +303,11 @@ def init_db():
                     (username, generate_password_hash(password), role, name, now()))
         con.commit()
 
+
+# Initialize the schema when the module is imported (for Railway/Gunicorn) as well as when run locally.
+# This is idempotent: CREATE TABLE IF NOT EXISTS and default-user checks are safe to repeat.
+init_db()
+
 def import_seed_once():
     if IMPORT_MARKER.exists() or not SEED_PATH.exists():
         return
