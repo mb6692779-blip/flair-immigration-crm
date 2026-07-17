@@ -475,6 +475,12 @@ def audit(action, details=""):
             con.execute("INSERT INTO audit_log(username,action,details,created_at) VALUES(?,?,?,?)",
                 (session.get("username","system"), action, details, now()))
             con.commit()
+
+        if 'create_notification_from_audit' in globals():
+            try:
+                create_notification_from_audit(action, details)
+            except Exception as notification_error:
+                print("Notification creation failed:", notification_error)
     except Exception:
         pass
 
@@ -1281,648 +1287,28 @@ def convert_lead_to_client(lead_id):
 
 
 
-# === FLAIR PROCESSING SYNC API V1 ===
 
-def ensure_processing_sync_columns():
-    with db() as con:
-        if IS_POSTGRES:
-            rows = con.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='processing_sheet'
-            """).fetchall()
-            existing = {row["column_name"] for row in rows}
-        else:
-            rows = con.execute("PRAGMA table_info(processing_sheet)").fetchall()
-            existing = {row["name"] for row in rows}
 
-        required = {
-            "google_sheet_row": "INTEGER",
-            "google_sync_at": "TEXT",
-            "google_sync_source": "TEXT",
-        }
 
-        for column, column_type in required.items():
-            if column not in existing:
-                con.execute(f"ALTER TABLE processing_sheet ADD COLUMN {column} {column_type}")
-        con.commit()
 
 
-def sync_api_required(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        expected = os.environ.get("GOOGLE_SYNC_KEY", "").strip()
-        provided = request.headers.get("X-Flair-Sync-Key", "").strip()
 
-        if not expected:
-            return jsonify({
-                "ok": False,
-                "error": "GOOGLE_SYNC_KEY is not configured on Railway"
-            }), 503
 
-        if not provided or provided != expected:
-            return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
-        return fn(*args, **kwargs)
-    return wrapper
 
+# === FLAIR IMMIGRATION CRM NOTIFICATIONS V1 ===
 
-PROCESSING_SYNC_FIELDS = [
-    "client_name", "program", "processing_start_date", "nif",
-    "personal_bank_account", "company_name", "company_formation",
-    "company_bank_account", "business_plan", "personal_funds_transferred",
-    "application_ready", "funds_transfer", "application_submission",
-    "decision", "status", "delay", "remarks",
-]
-
-
-def normalize_sync_text(value):
-    return " ".join(str(value or "").strip().lower().split())
-
-
-@app.get("/api/sync/processing/health")
-@sync_api_required
-def processing_sync_health():
-    ensure_processing_sync_columns()
-    return jsonify({
-        "ok": True,
-        "service": "Flair Processing Sync API",
-        "database_backend": "postgres" if IS_POSTGRES else "sqlite",
-    })
-
-
-@app.get("/api/sync/processing/export")
-@sync_api_required
-def processing_sync_export():
-    ensure_processing_sync_columns()
-    with db() as con:
-        rows = con.execute(
-            "SELECT * FROM processing_sheet ORDER BY id"
-        ).fetchall()
-
-    exported = []
-    for row in rows:
-        item = {"crm_id": row["id"]}
-        for field in PROCESSING_SYNC_FIELDS:
-            item[field] = row[field]
-        item["crm_updated_at"] = row["updated_at"]
-        item["google_sheet_row"] = row["google_sheet_row"]
-        exported.append(item)
-
-    return jsonify({"ok": True, "count": len(exported), "rows": exported})
-
-
-@app.post("/api/sync/processing/import")
-@sync_api_required
-def processing_sync_import():
-    ensure_processing_sync_columns()
-    payload = request.get_json(silent=True) or {}
-    incoming_rows = payload.get("rows")
-
-    if not isinstance(incoming_rows, list):
-        return jsonify({
-            "ok": False,
-            "error": "JSON body must contain a rows list"
-        }), 400
-
-    results = {
-        "updated": [],
-        "matched": [],
-        "review_required": [],
-        "skipped": [],
-    }
-
-    with db() as con:
-        for index, incoming in enumerate(incoming_rows, start=1):
-            if not isinstance(incoming, dict):
-                results["skipped"].append({
-                    "index": index,
-                    "reason": "Row is not an object",
-                })
-                continue
-
-            crm_id = incoming.get("crm_id")
-            sheet_row = incoming.get("sheet_row")
-            target = None
-            match_type = None
-
-            if crm_id not in (None, ""):
-                try:
-                    target = con.execute(
-                        "SELECT * FROM processing_sheet WHERE id=?",
-                        (int(crm_id),),
-                    ).fetchone()
-                    if target:
-                        match_type = "crm_id"
-                except (TypeError, ValueError):
-                    target = None
-
-            if not target:
-                client_key = normalize_sync_text(incoming.get("client_name"))
-                program_key = normalize_sync_text(incoming.get("program"))
-
-                if not client_key:
-                    results["review_required"].append({
-                        "index": index,
-                        "reason": "Missing client_name and no valid crm_id",
-                    })
-                    continue
-
-                candidates = con.execute("""
-                    SELECT * FROM processing_sheet
-                    WHERE lower(trim(client_name))=?
-                    ORDER BY id
-                """, (client_key,)).fetchall()
-
-                if program_key:
-                    candidates = [
-                        row for row in candidates
-                        if normalize_sync_text(row["program"]) == program_key
-                    ]
-
-                if len(candidates) == 1:
-                    target = candidates[0]
-                    match_type = "exact_name_program"
-                elif len(candidates) > 1:
-                    results["review_required"].append({
-                        "index": index,
-                        "client_name": incoming.get("client_name"),
-                        "program": incoming.get("program"),
-                        "reason": "Multiple CRM records matched",
-                        "candidate_ids": [row["id"] for row in candidates],
-                    })
-                    continue
-                else:
-                    results["review_required"].append({
-                        "index": index,
-                        "client_name": incoming.get("client_name"),
-                        "program": incoming.get("program"),
-                        "reason": "No CRM record matched; automatic creation is disabled",
-                    })
-                    continue
-
-            sheet_known_crm_updated_at = str(
-                incoming.get("crm_updated_at") or ""
-            ).strip()
-            current_crm_updated_at = str(target["updated_at"] or "").strip()
-
-            if (
-                sheet_known_crm_updated_at
-                and current_crm_updated_at
-                and sheet_known_crm_updated_at != current_crm_updated_at
-            ):
-                results["review_required"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "reason": "CRM record changed after the sheet was last synchronized",
-                    "crm_updated_at": current_crm_updated_at,
-                    "sheet_known_crm_updated_at": sheet_known_crm_updated_at,
-                })
-                continue
-
-            values = []
-            changed_fields = []
-
-            for field in PROCESSING_SYNC_FIELDS:
-                if field in incoming:
-                    new_value = incoming.get(field)
-                    values.append(new_value)
-                    if str(target[field] or "") != str(new_value or ""):
-                        changed_fields.append(field)
-                else:
-                    values.append(target[field])
-
-            if not changed_fields:
-                if sheet_row not in (None, ""):
-                    con.execute("""
-                        UPDATE processing_sheet
-                        SET google_sheet_row=?, google_sync_at=?, google_sync_source=?
-                        WHERE id=?
-                    """, (
-                        int(sheet_row), now(), "google_sheet_no_change", target["id"]
-                    ))
-
-                results["matched"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "match_type": match_type,
-                    "changed_fields": [],
-                })
-                continue
-
-            set_sql = ",".join(f"{field}=?" for field in PROCESSING_SYNC_FIELDS)
-            con.execute(
-                f"""
-                UPDATE processing_sheet
-                SET {set_sql},
-                    google_sheet_row=?,
-                    google_sync_at=?,
-                    google_sync_source=?,
-                    updated_by=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                values + [
-                    int(sheet_row) if sheet_row not in (None, "") else None,
-                    now(), "google_sheet", "google_sheets_sync", now(), target["id"],
-                ],
-            )
-
-            results["updated"].append({
-                "index": index,
-                "crm_id": target["id"],
-                "match_type": match_type,
-                "changed_fields": changed_fields,
-            })
-
-        con.commit()
-
-    audit(
-        "processing_google_sync",
-        (
-            f"updated={len(results['updated'])} "
-            f"matched={len(results['matched'])} "
-            f"review={len(results['review_required'])} "
-            f"skipped={len(results['skipped'])}"
-        ),
-    )
-
-    return jsonify({
-        "ok": True,
-        "summary": {
-            "updated": len(results["updated"]),
-            "matched": len(results["matched"]),
-            "review_required": len(results["review_required"]),
-            "skipped": len(results["skipped"]),
-        },
-        "results": results,
-    })
-
-
-# === END FLAIR PROCESSING SYNC API V1 ===
-
-
-
-# === FLAIR ACCOUNTS SYNC API V1 ===
-
-def ensure_accounts_sync_columns():
-    """Add Google Sheets sync metadata without changing existing payment data."""
-    with db() as con:
-        if IS_POSTGRES:
-            rows = con.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='client_payments'
-            """).fetchall()
-            existing = {row["column_name"] for row in rows}
-        else:
-            rows = con.execute("PRAGMA table_info(client_payments)").fetchall()
-            existing = {row["name"] for row in rows}
-
-        required = {
-            "google_sheet_row": "INTEGER",
-            "google_sync_at": "TEXT",
-            "google_sync_source": "TEXT",
-            "sheet_account_end": "TEXT",
-            "sheet_delay_reason": "TEXT",
-        }
-
-        for column, column_type in required.items():
-            if column not in existing:
-                con.execute(
-                    f"ALTER TABLE client_payments ADD COLUMN {column} {column_type}"
-                )
-        con.commit()
-
-
-def normalize_account_sync_text(value):
-    text = " ".join(str(value or "").strip().lower().split())
-    text = text.replace("migration", "").replace("-", "").replace(" ", "")
-    return text
-
-
-@app.get("/api/sync/accounts/health")
-@sync_api_required
-def accounts_sync_health():
-    ensure_accounts_sync_columns()
-    return jsonify({
-        "ok": True,
-        "service": "Flair Accounts Sync API",
-        "database_backend": "postgres" if IS_POSTGRES else "sqlite",
-        "mode": "controlled_two_way",
-    })
-
-
-@app.get("/api/sync/accounts/export")
-@sync_api_required
-def accounts_sync_export():
-    ensure_accounts_sync_columns()
-
-    with db() as con:
-        rows = con.execute("""
-            SELECT *
-            FROM client_payments
-            ORDER BY id
-        """).fetchall()
-
-    exported = []
-    for row in rows:
-        exported.append({
-            "crm_id": row["id"],
-            "date": row["date"],
-            "visa": row["visa"],
-            "inv": row["inv"],
-            "client_name": row["client_name"],
-            "roe_invoice": row["roe_invoice"],
-            "total_eur": row["total_eur"],
-            "invoice_pkr": row["invoice_pkr"],
-            "stage1_roe": row["stage1_roe"],
-            "stage1_eur": row["stage1_eur"],
-            "stage2_roe": row["stage2_roe"],
-            "stage2_eur": row["stage2_eur"],
-            "stage3_roe": row["stage3_roe"],
-            "stage3_eur": row["stage3_eur"],
-            "received_pkr": row["received_pkr"],
-            "received_percent": row["received_percent"],
-            "balance_pkr": row["balance_pkr"],
-            "balance_eur": row["balance_eur"],
-            "payment_stage": row["payment_stage"],
-            "remarks": row["remarks"],
-            "account_end": row["sheet_account_end"],
-            "delay_reason": row["sheet_delay_reason"],
-            "crm_updated_at": row["updated_at"],
-            "google_sheet_row": row["google_sheet_row"],
-        })
-
-    return jsonify({
-        "ok": True,
-        "count": len(exported),
-        "rows": exported,
-    })
-
-
-@app.post("/api/sync/accounts/import")
-@sync_api_required
-def accounts_sync_import():
-    """
-    Controlled Sheet -> CRM import.
-
-    Financial values are never overwritten directly. Any financial difference is
-    returned as review_required so the existing Accounts/Management payment
-    approval workflow stays intact. Only non-financial sheet notes are updated
-    automatically.
-    """
-    ensure_accounts_sync_columns()
-    payload = request.get_json(silent=True) or {}
-    incoming_rows = payload.get("rows")
-
-    if not isinstance(incoming_rows, list):
-        return jsonify({
-            "ok": False,
-            "error": "JSON body must contain a rows list",
-        }), 400
-
-    financial_fields = [
-        "roe_invoice", "total_eur", "invoice_pkr",
-        "stage1_roe", "stage1_eur", "stage2_roe", "stage2_eur",
-        "stage3_roe", "stage3_eur", "received_pkr",
-        "received_percent", "balance_pkr", "balance_eur",
-    ]
-
-    results = {
-        "updated_notes": [],
-        "matched": [],
-        "review_required": [],
-        "skipped": [],
-    }
-
-    with db() as con:
-        for index, incoming in enumerate(incoming_rows, start=1):
-            if not isinstance(incoming, dict):
-                results["skipped"].append({
-                    "index": index,
-                    "reason": "Row is not an object",
-                })
-                continue
-
-            target = None
-            match_type = None
-            crm_id = incoming.get("crm_id")
-            sheet_row = incoming.get("sheet_row")
-
-            if crm_id not in (None, ""):
-                try:
-                    target = con.execute(
-                        "SELECT * FROM client_payments WHERE id=?",
-                        (int(crm_id),),
-                    ).fetchone()
-                    if target:
-                        match_type = "crm_id"
-                except (TypeError, ValueError):
-                    target = None
-
-            if not target:
-                inv_key = normalize_account_sync_text(incoming.get("inv"))
-                client_key = normalize_account_sync_text(
-                    incoming.get("client_name")
-                )
-
-                if not inv_key and not client_key:
-                    results["skipped"].append({
-                        "index": index,
-                        "reason": "Missing invoice and client name",
-                    })
-                    continue
-
-                candidates = con.execute("""
-                    SELECT *
-                    FROM client_payments
-                    ORDER BY id
-                """).fetchall()
-
-                matches = []
-                for row in candidates:
-                    same_inv = (
-                        bool(inv_key)
-                        and normalize_account_sync_text(row["inv"]) == inv_key
-                    )
-                    same_client = (
-                        bool(client_key)
-                        and normalize_account_sync_text(row["client_name"])
-                        == client_key
-                    )
-
-                    if inv_key and client_key:
-                        if same_inv and same_client:
-                            matches.append(row)
-                    elif same_inv or same_client:
-                        matches.append(row)
-
-                if len(matches) == 1:
-                    target = matches[0]
-                    match_type = "invoice_client"
-                elif len(matches) > 1:
-                    results["review_required"].append({
-                        "index": index,
-                        "reason": "Multiple CRM payment records matched",
-                        "candidate_ids": [row["id"] for row in matches],
-                    })
-                    continue
-                else:
-                    results["review_required"].append({
-                        "index": index,
-                        "reason": "No CRM payment record matched; creation is disabled",
-                        "client_name": incoming.get("client_name"),
-                        "inv": incoming.get("inv"),
-                    })
-                    continue
-
-            known_updated_at = str(
-                incoming.get("crm_updated_at") or ""
-            ).strip()
-            current_updated_at = str(target["updated_at"] or "").strip()
-
-            if (
-                known_updated_at
-                and current_updated_at
-                and known_updated_at != current_updated_at
-            ):
-                results["review_required"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "reason": "CRM record changed after the sheet was last synchronized",
-                    "crm_updated_at": current_updated_at,
-                    "sheet_known_crm_updated_at": known_updated_at,
-                })
-                continue
-
-            financial_changes = []
-            for field in financial_fields:
-                if field not in incoming:
-                    continue
-
-                sheet_value = safe_float(incoming.get(field))
-                crm_value = safe_float(target[field])
-
-                if abs(sheet_value - crm_value) > 0.01:
-                    financial_changes.append({
-                        "field": field,
-                        "sheet": sheet_value,
-                        "crm": crm_value,
-                    })
-
-            if financial_changes:
-                results["review_required"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "reason": (
-                        "Financial differences require Accounts/Management review"
-                    ),
-                    "financial_changes": financial_changes,
-                })
-                continue
-
-            account_end = str(incoming.get("account_end") or "").strip()
-            delay_reason = str(incoming.get("delay_reason") or "").strip()
-            remarks = str(incoming.get("remarks") or target["remarks"] or "").strip()
-
-            notes_changed = (
-                account_end != str(target["sheet_account_end"] or "").strip()
-                or delay_reason != str(target["sheet_delay_reason"] or "").strip()
-                or remarks != str(target["remarks"] or "").strip()
-            )
-
-            if notes_changed:
-                con.execute("""
-                    UPDATE client_payments
-                    SET sheet_account_end=?,
-                        sheet_delay_reason=?,
-                        remarks=?,
-                        google_sheet_row=?,
-                        google_sync_at=?,
-                        google_sync_source=?,
-                        updated_by=?,
-                        updated_at=?
-                    WHERE id=?
-                """, (
-                    account_end,
-                    delay_reason,
-                    remarks,
-                    int(sheet_row) if sheet_row not in (None, "") else None,
-                    now(),
-                    "google_sheet_notes",
-                    "google_sheets_sync",
-                    now(),
-                    target["id"],
-                ))
-
-                results["updated_notes"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "match_type": match_type,
-                })
-            else:
-                if sheet_row not in (None, ""):
-                    con.execute("""
-                        UPDATE client_payments
-                        SET google_sheet_row=?,
-                            google_sync_at=?,
-                            google_sync_source=?
-                        WHERE id=?
-                    """, (
-                        int(sheet_row),
-                        now(),
-                        "google_sheet_no_change",
-                        target["id"],
-                    ))
-
-                results["matched"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "match_type": match_type,
-                })
-
-        con.commit()
-
-    audit(
-        "accounts_google_sync",
-        (
-            f"notes={len(results['updated_notes'])} "
-            f"matched={len(results['matched'])} "
-            f"review={len(results['review_required'])} "
-            f"skipped={len(results['skipped'])}"
-        ),
-    )
-
-    return jsonify({
-        "ok": True,
-        "summary": {
-            "updated_notes": len(results["updated_notes"]),
-            "matched": len(results["matched"]),
-            "review_required": len(results["review_required"]),
-            "skipped": len(results["skipped"]),
-        },
-        "results": results,
-    })
-
-
-# === END FLAIR ACCOUNTS SYNC API V1 ===
-
-
-
-# === FLAIR SYNC ENGINE V2 + NOTIFICATIONS ===
-
-def ensure_sync_notifications_table():
+def ensure_crm_notifications_table():
     with db() as con:
         schema = """
-        CREATE TABLE IF NOT EXISTS sync_notifications(
+        CREATE TABLE IF NOT EXISTS crm_notifications(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            record_type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT,
+            record_type TEXT,
             record_id INTEGER,
-            record_name TEXT,
-            summary TEXT NOT NULL,
-            details TEXT,
+            created_by TEXT,
             is_read INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
         );
@@ -1936,549 +1322,159 @@ def ensure_sync_notifications_table():
         con.commit()
 
 
-def add_sync_notification(
-    source,
-    record_type,
-    record_id,
-    record_name,
-    summary,
-    details,
+def create_crm_notification(
+    category,
+    title,
+    message="",
+    record_type="",
+    record_id=None,
+    created_by=None,
 ):
-    ensure_sync_notifications_table()
+    ensure_crm_notifications_table()
     with db() as con:
         con.execute("""
-            INSERT INTO sync_notifications(
-                source,record_type,record_id,record_name,
-                summary,details,is_read,created_at
+            INSERT INTO crm_notifications(
+                category,title,message,record_type,record_id,
+                created_by,is_read,created_at
             ) VALUES(?,?,?,?,?,?,?,?)
         """, (
-            source,
+            category,
+            title,
+            message,
             record_type,
             record_id,
-            record_name,
-            summary,
-            json.dumps(details, ensure_ascii=False),
+            created_by or session.get("username", "system"),
             0,
             now(),
         ))
         con.commit()
 
 
-def normalize_sync_timestamp(value):
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = text.replace("Z", "")
-    if "." in text:
-        text = text.split(".", 1)[0]
-    return text.replace(" ", "T")[:19]
+def create_notification_from_audit(action, details):
+    action_map = {
+        "client_added": ("Client", "New client added"),
+        "processing_updated": ("Processing", "Visa processing updated"),
+        "payment_request_sent": ("Accounts", "Payment approval requested"),
+        "payment_added_direct": ("Accounts", "Payment updated"),
+        "payment_request_approved": ("Accounts", "Payment request approved"),
+        "payment_request_rejected": ("Accounts", "Payment request rejected"),
+        "share_transfer": ("Accounts", "Share transfer updated"),
+        "lead_added": ("Lead", "New lead added"),
+        "lead_updated": ("Lead", "Lead updated"),
+        "lead_converted": ("Lead", "Lead converted to client"),
+    }
+
+    if action not in action_map:
+        return
+
+    category, title = action_map[action]
+    record_type = ""
+    record_id = None
+    message = str(details or "")
+
+    if action == "processing_updated":
+        record_type = "processing"
+        try:
+            record_id = int(details)
+            with db() as con:
+                row = con.execute(
+                    "SELECT client_name,program,status FROM processing_sheet WHERE id=?",
+                    (record_id,),
+                ).fetchone()
+            if row:
+                message = (
+                    f"{row['client_name']} | {row['program']} | "
+                    f"Current status: {row['status'] or 'Not set'}"
+                )
+        except Exception:
+            pass
+    elif action.startswith("payment_"):
+        record_type = "payment"
+    elif action == "share_transfer":
+        record_type = "share_payment"
+        try:
+            record_id = int(details)
+            with db() as con:
+                row = con.execute(
+                    "SELECT client_name,share_type,status FROM share_payments WHERE id=?",
+                    (record_id,),
+                ).fetchone()
+            if row:
+                message = (
+                    f"{row['client_name']} | {row['share_type']} | "
+                    f"Status: {row['status'] or 'Pending'}"
+                )
+        except Exception:
+            pass
+    elif action.startswith("lead_"):
+        record_type = "lead"
+    elif action == "client_added":
+        record_type = "client"
+
+    create_crm_notification(
+        category=category,
+        title=title,
+        message=message,
+        record_type=record_type,
+        record_id=record_id,
+        created_by=session.get("username", "system"),
+    )
 
 
 @app.context_processor
-def inject_sync_notification_count():
+def inject_crm_notification_count():
     try:
-        ensure_sync_notifications_table()
+        ensure_crm_notifications_table()
         with db() as con:
-            unread = con.execute(
-                "SELECT COUNT(*) c FROM sync_notifications WHERE is_read=0"
+            count = con.execute(
+                "SELECT COUNT(*) c FROM crm_notifications WHERE is_read=0"
             ).fetchone()["c"]
     except Exception:
-        unread = 0
-    return {"sync_notification_count": unread}
+        count = 0
+    return {"crm_notification_count": count}
 
 
-@app.get("/sync-notifications")
+@app.get("/notifications")
 @login_required
 @management_required
-def sync_notifications_page():
-    ensure_sync_notifications_table()
-    source_filter = request.args.get("source", "").strip()
+def notifications_page():
+    ensure_crm_notifications_table()
+    category = request.args.get("category", "").strip()
 
     with db() as con:
-        if source_filter:
+        if category:
             rows = con.execute("""
-                SELECT * FROM sync_notifications
-                WHERE source=?
+                SELECT * FROM crm_notifications
+                WHERE category=?
                 ORDER BY id DESC
                 LIMIT 300
-            """, (source_filter,)).fetchall()
+            """, (category,)).fetchall()
         else:
             rows = con.execute("""
-                SELECT * FROM sync_notifications
+                SELECT * FROM crm_notifications
                 ORDER BY id DESC
                 LIMIT 300
             """).fetchall()
 
     return render_template(
-        "sync_notifications.html",
+        "notifications.html",
         rows=rows,
-        source_filter=source_filter,
+        selected_category=category,
     )
 
 
-@app.post("/sync-notifications/read-all")
+@app.post("/notifications/read-all")
 @login_required
 @management_required
-def sync_notifications_read_all():
-    ensure_sync_notifications_table()
+def notifications_read_all():
+    ensure_crm_notifications_table()
     with db() as con:
-        con.execute("UPDATE sync_notifications SET is_read=1")
+        con.execute("UPDATE crm_notifications SET is_read=1")
         con.commit()
-    return redirect(url_for("sync_notifications_page"))
+    return redirect(url_for("notifications_page"))
 
 
-@app.post("/api/sync/processing/import-v2")
-@sync_api_required
-def processing_sync_import_v2():
-    ensure_processing_sync_columns()
-    ensure_sync_notifications_table()
-
-    payload = request.get_json(silent=True) or {}
-    incoming_rows = payload.get("rows")
-    if not isinstance(incoming_rows, list):
-        return jsonify({"ok": False, "error": "rows list required"}), 400
-
-    # Remarks are intentionally excluded because the processing workbook
-    # currently has no dedicated remarks column.
-    sheet_fields = [
-        "client_name", "program", "processing_start_date", "nif",
-        "personal_bank_account", "company_name", "company_formation",
-        "company_bank_account", "business_plan",
-        "personal_funds_transferred", "application_ready",
-        "funds_transfer", "application_submission", "decision",
-        "status", "delay",
-    ]
-
-    results = {
-        "updated": [],
-        "matched": [],
-        "review_required": [],
-        "skipped": [],
-    }
-
-    with db() as con:
-        for index, incoming in enumerate(incoming_rows, start=1):
-            if not isinstance(incoming, dict):
-                results["skipped"].append({
-                    "index": index,
-                    "reason": "Invalid row",
-                })
-                continue
-
-            target = None
-            match_type = None
-            crm_id = incoming.get("crm_id")
-            sheet_row = incoming.get("sheet_row")
-
-            if crm_id not in (None, ""):
-                try:
-                    target = con.execute(
-                        "SELECT * FROM processing_sheet WHERE id=?",
-                        (int(crm_id),),
-                    ).fetchone()
-                    if target:
-                        match_type = "crm_id"
-                except (TypeError, ValueError):
-                    target = None
-
-            if not target:
-                client_key = normalize_sync_text(incoming.get("client_name"))
-                program_key = normalize_sync_text(incoming.get("program"))
-
-                candidates = con.execute("""
-                    SELECT * FROM processing_sheet
-                    WHERE lower(trim(client_name))=?
-                    ORDER BY id
-                """, (client_key,)).fetchall() if client_key else []
-
-                if program_key:
-                    candidates = [
-                        row for row in candidates
-                        if normalize_sync_text(row["program"]) == program_key
-                    ]
-
-                if len(candidates) == 1:
-                    target = candidates[0]
-                    match_type = "name_program"
-                elif len(candidates) > 1:
-                    results["review_required"].append({
-                        "index": index,
-                        "reason": "Multiple CRM records matched",
-                        "candidate_ids": [row["id"] for row in candidates],
-                    })
-                    continue
-                else:
-                    results["review_required"].append({
-                        "index": index,
-                        "reason": "No CRM record matched",
-                        "client_name": incoming.get("client_name"),
-                    })
-                    continue
-
-            changes = []
-            values = []
-
-            for field in sheet_fields:
-                new_value = incoming.get(field, target[field])
-                values.append(new_value)
-                if str(new_value or "").strip() != str(target[field] or "").strip():
-                    changes.append({
-                        "field": field,
-                        "old": target[field],
-                        "new": new_value,
-                    })
-
-            known_ts = normalize_sync_timestamp(
-                incoming.get("crm_updated_at")
-            )
-            current_ts = normalize_sync_timestamp(target["updated_at"])
-
-            # A genuine conflict exists only when both sides changed after
-            # the previous sync. Timestamp formatting differences alone are ignored.
-            if known_ts and current_ts and known_ts != current_ts and changes:
-                previous_source = str(
-                    target["google_sync_source"] or ""
-                ).strip()
-                if previous_source not in {
-                    "",
-                    "google_sheet_no_change",
-                    "google_sheet_link",
-                    "google_sheet",
-                }:
-                    results["review_required"].append({
-                        "index": index,
-                        "crm_id": target["id"],
-                        "reason": "CRM and Google Sheet both changed",
-                        "changed_fields": [c["field"] for c in changes],
-                    })
-                    continue
-
-            if not changes:
-                con.execute("""
-                    UPDATE processing_sheet
-                    SET google_sheet_row=?,
-                        google_sync_at=?,
-                        google_sync_source=?
-                    WHERE id=?
-                """, (
-                    int(sheet_row) if sheet_row not in (None, "") else None,
-                    now(),
-                    "google_sheet_no_change",
-                    target["id"],
-                ))
-                results["matched"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "match_type": match_type,
-                })
-                continue
-
-            set_sql = ",".join(f"{field}=?" for field in sheet_fields)
-            updated_at = now()
-
-            con.execute(
-                f"""
-                UPDATE processing_sheet
-                SET {set_sql},
-                    google_sheet_row=?,
-                    google_sync_at=?,
-                    google_sync_source=?,
-                    updated_by=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                values + [
-                    int(sheet_row) if sheet_row not in (None, "") else None,
-                    updated_at,
-                    "google_sheet",
-                    "google_processing_sheet",
-                    updated_at,
-                    target["id"],
-                ],
-            )
-
-            add_sync_notification(
-                "Processing Sheet",
-                "processing",
-                target["id"],
-                target["client_name"],
-                (
-                    f"{target['client_name']} processing updated "
-                    f"({len(changes)} field{'s' if len(changes) != 1 else ''})"
-                ),
-                changes,
-            )
-
-            results["updated"].append({
-                "index": index,
-                "crm_id": target["id"],
-                "match_type": match_type,
-                "changed_fields": [c["field"] for c in changes],
-                "crm_updated_at": updated_at,
-            })
-
-        con.commit()
-
-    return jsonify({
-        "ok": True,
-        "summary": {
-            "updated": len(results["updated"]),
-            "matched": len(results["matched"]),
-            "review_required": len(results["review_required"]),
-            "skipped": len(results["skipped"]),
-        },
-        "results": results,
-    })
-
-
-@app.post("/api/sync/accounts/import-v2")
-@sync_api_required
-def accounts_sync_import_v2():
-    ensure_accounts_sync_columns()
-    ensure_sync_notifications_table()
-
-    payload = request.get_json(silent=True) or {}
-    incoming_rows = payload.get("rows")
-    if not isinstance(incoming_rows, list):
-        return jsonify({"ok": False, "error": "rows list required"}), 400
-
-    sheet_fields = [
-        "date", "visa", "inv", "client_name",
-        "roe_invoice", "total_eur", "invoice_pkr",
-        "stage1_roe", "stage1_eur",
-        "stage2_roe", "stage2_eur",
-        "stage3_roe", "stage3_eur",
-        "received_pkr", "received_percent",
-        "balance_pkr", "balance_eur",
-        "payment_stage", "remarks",
-        "account_end", "delay_reason",
-    ]
-
-    database_map = {
-        "account_end": "sheet_account_end",
-        "delay_reason": "sheet_delay_reason",
-    }
-
-    numeric_fields = {
-        "roe_invoice", "total_eur", "invoice_pkr",
-        "stage1_roe", "stage1_eur",
-        "stage2_roe", "stage2_eur",
-        "stage3_roe", "stage3_eur",
-        "received_pkr", "received_percent",
-        "balance_pkr", "balance_eur",
-    }
-
-    results = {
-        "updated": [],
-        "matched": [],
-        "review_required": [],
-        "skipped": [],
-    }
-
-    with db() as con:
-        all_payments = con.execute(
-            "SELECT * FROM client_payments ORDER BY id"
-        ).fetchall()
-
-        for index, incoming in enumerate(incoming_rows, start=1):
-            if not isinstance(incoming, dict):
-                results["skipped"].append({
-                    "index": index,
-                    "reason": "Invalid row",
-                })
-                continue
-
-            target = None
-            match_type = None
-            crm_id = incoming.get("crm_id")
-            sheet_row = incoming.get("sheet_row")
-
-            if crm_id not in (None, ""):
-                try:
-                    target = con.execute(
-                        "SELECT * FROM client_payments WHERE id=?",
-                        (int(crm_id),),
-                    ).fetchone()
-                    if target:
-                        match_type = "crm_id"
-                except (TypeError, ValueError):
-                    target = None
-
-            if not target:
-                inv_key = normalize_account_sync_text(incoming.get("inv"))
-                client_key = normalize_account_sync_text(
-                    incoming.get("client_name")
-                )
-
-                matches = []
-                for row in all_payments:
-                    same_inv = (
-                        bool(inv_key)
-                        and normalize_account_sync_text(row["inv"]) == inv_key
-                    )
-                    same_client = (
-                        bool(client_key)
-                        and normalize_account_sync_text(row["client_name"])
-                        == client_key
-                    )
-                    if inv_key and client_key:
-                        if same_inv and same_client:
-                            matches.append(row)
-                    elif same_inv or same_client:
-                        matches.append(row)
-
-                if len(matches) == 1:
-                    target = matches[0]
-                    match_type = "invoice_client"
-                elif len(matches) > 1:
-                    results["review_required"].append({
-                        "index": index,
-                        "reason": "Multiple payment records matched",
-                        "candidate_ids": [row["id"] for row in matches],
-                    })
-                    continue
-                else:
-                    results["review_required"].append({
-                        "index": index,
-                        "reason": "No payment record matched",
-                        "client_name": incoming.get("client_name"),
-                        "inv": incoming.get("inv"),
-                    })
-                    continue
-
-            changes = []
-            update_columns = []
-            update_values = []
-
-            for field in sheet_fields:
-                if field not in incoming:
-                    continue
-
-                db_field = database_map.get(field, field)
-                new_value = incoming.get(field)
-                old_value = target[db_field]
-
-                if field in numeric_fields:
-                    new_value = safe_float(new_value)
-                    different = abs(
-                        safe_float(old_value) - new_value
-                    ) > 0.01
-                else:
-                    new_value = str(new_value or "").strip()
-                    different = (
-                        str(old_value or "").strip() != new_value
-                    )
-
-                if different:
-                    changes.append({
-                        "field": field,
-                        "old": old_value,
-                        "new": new_value,
-                    })
-                    update_columns.append(db_field)
-                    update_values.append(new_value)
-
-            known_ts = normalize_sync_timestamp(
-                incoming.get("crm_updated_at")
-            )
-            current_ts = normalize_sync_timestamp(target["updated_at"])
-
-            if known_ts and current_ts and known_ts != current_ts and changes:
-                previous_source = str(
-                    target["google_sync_source"] or ""
-                ).strip()
-                if previous_source not in {
-                    "",
-                    "google_sheet_no_change",
-                    "google_accounts_sheet",
-                }:
-                    results["review_required"].append({
-                        "index": index,
-                        "crm_id": target["id"],
-                        "reason": "CRM and Accounts Sheet both changed",
-                        "changed_fields": [c["field"] for c in changes],
-                    })
-                    continue
-
-            if not changes:
-                con.execute("""
-                    UPDATE client_payments
-                    SET google_sheet_row=?,
-                        google_sync_at=?,
-                        google_sync_source=?
-                    WHERE id=?
-                """, (
-                    int(sheet_row) if sheet_row not in (None, "") else None,
-                    now(),
-                    "google_sheet_no_change",
-                    target["id"],
-                ))
-                results["matched"].append({
-                    "index": index,
-                    "crm_id": target["id"],
-                    "match_type": match_type,
-                })
-                continue
-
-            updated_at = now()
-            set_sql = ",".join(f"{column}=?" for column in update_columns)
-
-            con.execute(
-                f"""
-                UPDATE client_payments
-                SET {set_sql},
-                    google_sheet_row=?,
-                    google_sync_at=?,
-                    google_sync_source=?,
-                    updated_by=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                update_values + [
-                    int(sheet_row) if sheet_row not in (None, "") else None,
-                    updated_at,
-                    "google_accounts_sheet",
-                    "google_accounts_sheet",
-                    updated_at,
-                    target["id"],
-                ],
-            )
-
-            add_sync_notification(
-                "Accounts Sheet",
-                "client_payment",
-                target["id"],
-                target["client_name"],
-                (
-                    f"{target['client_name']} account updated "
-                    f"({len(changes)} field{'s' if len(changes) != 1 else ''})"
-                ),
-                changes,
-            )
-
-            results["updated"].append({
-                "index": index,
-                "crm_id": target["id"],
-                "match_type": match_type,
-                "changed_fields": [c["field"] for c in changes],
-                "crm_updated_at": updated_at,
-            })
-
-        con.commit()
-
-    return jsonify({
-        "ok": True,
-        "summary": {
-            "updated": len(results["updated"]),
-            "matched": len(results["matched"]),
-            "review_required": len(results["review_required"]),
-            "skipped": len(results["skipped"]),
-        },
-        "results": results,
-    })
-
-
-# === END FLAIR SYNC ENGINE V2 + NOTIFICATIONS ===
+# === END FLAIR IMMIGRATION CRM NOTIFICATIONS V1 ===
 
 
 @app.get("/favicon.ico")
