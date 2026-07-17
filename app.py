@@ -1562,6 +1562,353 @@ def processing_sync_import():
 # === END FLAIR PROCESSING SYNC API V1 ===
 
 
+
+# === FLAIR ACCOUNTS SYNC API V1 ===
+
+def ensure_accounts_sync_columns():
+    """Add Google Sheets sync metadata without changing existing payment data."""
+    with db() as con:
+        if IS_POSTGRES:
+            rows = con.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='client_payments'
+            """).fetchall()
+            existing = {row["column_name"] for row in rows}
+        else:
+            rows = con.execute("PRAGMA table_info(client_payments)").fetchall()
+            existing = {row["name"] for row in rows}
+
+        required = {
+            "google_sheet_row": "INTEGER",
+            "google_sync_at": "TEXT",
+            "google_sync_source": "TEXT",
+            "sheet_account_end": "TEXT",
+            "sheet_delay_reason": "TEXT",
+        }
+
+        for column, column_type in required.items():
+            if column not in existing:
+                con.execute(
+                    f"ALTER TABLE client_payments ADD COLUMN {column} {column_type}"
+                )
+        con.commit()
+
+
+def normalize_account_sync_text(value):
+    text = " ".join(str(value or "").strip().lower().split())
+    text = text.replace("migration", "").replace("-", "").replace(" ", "")
+    return text
+
+
+@app.get("/api/sync/accounts/health")
+@sync_api_required
+def accounts_sync_health():
+    ensure_accounts_sync_columns()
+    return jsonify({
+        "ok": True,
+        "service": "Flair Accounts Sync API",
+        "database_backend": "postgres" if IS_POSTGRES else "sqlite",
+        "mode": "controlled_two_way",
+    })
+
+
+@app.get("/api/sync/accounts/export")
+@sync_api_required
+def accounts_sync_export():
+    ensure_accounts_sync_columns()
+
+    with db() as con:
+        rows = con.execute("""
+            SELECT *
+            FROM client_payments
+            ORDER BY id
+        """).fetchall()
+
+    exported = []
+    for row in rows:
+        exported.append({
+            "crm_id": row["id"],
+            "date": row["date"],
+            "visa": row["visa"],
+            "inv": row["inv"],
+            "client_name": row["client_name"],
+            "roe_invoice": row["roe_invoice"],
+            "total_eur": row["total_eur"],
+            "invoice_pkr": row["invoice_pkr"],
+            "stage1_roe": row["stage1_roe"],
+            "stage1_eur": row["stage1_eur"],
+            "stage2_roe": row["stage2_roe"],
+            "stage2_eur": row["stage2_eur"],
+            "stage3_roe": row["stage3_roe"],
+            "stage3_eur": row["stage3_eur"],
+            "received_pkr": row["received_pkr"],
+            "received_percent": row["received_percent"],
+            "balance_pkr": row["balance_pkr"],
+            "balance_eur": row["balance_eur"],
+            "payment_stage": row["payment_stage"],
+            "remarks": row["remarks"],
+            "account_end": row["sheet_account_end"],
+            "delay_reason": row["sheet_delay_reason"],
+            "crm_updated_at": row["updated_at"],
+            "google_sheet_row": row["google_sheet_row"],
+        })
+
+    return jsonify({
+        "ok": True,
+        "count": len(exported),
+        "rows": exported,
+    })
+
+
+@app.post("/api/sync/accounts/import")
+@sync_api_required
+def accounts_sync_import():
+    """
+    Controlled Sheet -> CRM import.
+
+    Financial values are never overwritten directly. Any financial difference is
+    returned as review_required so the existing Accounts/Management payment
+    approval workflow stays intact. Only non-financial sheet notes are updated
+    automatically.
+    """
+    ensure_accounts_sync_columns()
+    payload = request.get_json(silent=True) or {}
+    incoming_rows = payload.get("rows")
+
+    if not isinstance(incoming_rows, list):
+        return jsonify({
+            "ok": False,
+            "error": "JSON body must contain a rows list",
+        }), 400
+
+    financial_fields = [
+        "roe_invoice", "total_eur", "invoice_pkr",
+        "stage1_roe", "stage1_eur", "stage2_roe", "stage2_eur",
+        "stage3_roe", "stage3_eur", "received_pkr",
+        "received_percent", "balance_pkr", "balance_eur",
+    ]
+
+    results = {
+        "updated_notes": [],
+        "matched": [],
+        "review_required": [],
+        "skipped": [],
+    }
+
+    with db() as con:
+        for index, incoming in enumerate(incoming_rows, start=1):
+            if not isinstance(incoming, dict):
+                results["skipped"].append({
+                    "index": index,
+                    "reason": "Row is not an object",
+                })
+                continue
+
+            target = None
+            match_type = None
+            crm_id = incoming.get("crm_id")
+            sheet_row = incoming.get("sheet_row")
+
+            if crm_id not in (None, ""):
+                try:
+                    target = con.execute(
+                        "SELECT * FROM client_payments WHERE id=?",
+                        (int(crm_id),),
+                    ).fetchone()
+                    if target:
+                        match_type = "crm_id"
+                except (TypeError, ValueError):
+                    target = None
+
+            if not target:
+                inv_key = normalize_account_sync_text(incoming.get("inv"))
+                client_key = normalize_account_sync_text(
+                    incoming.get("client_name")
+                )
+
+                if not inv_key and not client_key:
+                    results["skipped"].append({
+                        "index": index,
+                        "reason": "Missing invoice and client name",
+                    })
+                    continue
+
+                candidates = con.execute("""
+                    SELECT *
+                    FROM client_payments
+                    ORDER BY id
+                """).fetchall()
+
+                matches = []
+                for row in candidates:
+                    same_inv = (
+                        bool(inv_key)
+                        and normalize_account_sync_text(row["inv"]) == inv_key
+                    )
+                    same_client = (
+                        bool(client_key)
+                        and normalize_account_sync_text(row["client_name"])
+                        == client_key
+                    )
+
+                    if inv_key and client_key:
+                        if same_inv and same_client:
+                            matches.append(row)
+                    elif same_inv or same_client:
+                        matches.append(row)
+
+                if len(matches) == 1:
+                    target = matches[0]
+                    match_type = "invoice_client"
+                elif len(matches) > 1:
+                    results["review_required"].append({
+                        "index": index,
+                        "reason": "Multiple CRM payment records matched",
+                        "candidate_ids": [row["id"] for row in matches],
+                    })
+                    continue
+                else:
+                    results["review_required"].append({
+                        "index": index,
+                        "reason": "No CRM payment record matched; creation is disabled",
+                        "client_name": incoming.get("client_name"),
+                        "inv": incoming.get("inv"),
+                    })
+                    continue
+
+            known_updated_at = str(
+                incoming.get("crm_updated_at") or ""
+            ).strip()
+            current_updated_at = str(target["updated_at"] or "").strip()
+
+            if (
+                known_updated_at
+                and current_updated_at
+                and known_updated_at != current_updated_at
+            ):
+                results["review_required"].append({
+                    "index": index,
+                    "crm_id": target["id"],
+                    "reason": "CRM record changed after the sheet was last synchronized",
+                    "crm_updated_at": current_updated_at,
+                    "sheet_known_crm_updated_at": known_updated_at,
+                })
+                continue
+
+            financial_changes = []
+            for field in financial_fields:
+                if field not in incoming:
+                    continue
+
+                sheet_value = safe_float(incoming.get(field))
+                crm_value = safe_float(target[field])
+
+                if abs(sheet_value - crm_value) > 0.01:
+                    financial_changes.append({
+                        "field": field,
+                        "sheet": sheet_value,
+                        "crm": crm_value,
+                    })
+
+            if financial_changes:
+                results["review_required"].append({
+                    "index": index,
+                    "crm_id": target["id"],
+                    "reason": (
+                        "Financial differences require Accounts/Management review"
+                    ),
+                    "financial_changes": financial_changes,
+                })
+                continue
+
+            account_end = str(incoming.get("account_end") or "").strip()
+            delay_reason = str(incoming.get("delay_reason") or "").strip()
+            remarks = str(incoming.get("remarks") or target["remarks"] or "").strip()
+
+            notes_changed = (
+                account_end != str(target["sheet_account_end"] or "").strip()
+                or delay_reason != str(target["sheet_delay_reason"] or "").strip()
+                or remarks != str(target["remarks"] or "").strip()
+            )
+
+            if notes_changed:
+                con.execute("""
+                    UPDATE client_payments
+                    SET sheet_account_end=?,
+                        sheet_delay_reason=?,
+                        remarks=?,
+                        google_sheet_row=?,
+                        google_sync_at=?,
+                        google_sync_source=?,
+                        updated_by=?,
+                        updated_at=?
+                    WHERE id=?
+                """, (
+                    account_end,
+                    delay_reason,
+                    remarks,
+                    int(sheet_row) if sheet_row not in (None, "") else None,
+                    now(),
+                    "google_sheet_notes",
+                    "google_sheets_sync",
+                    now(),
+                    target["id"],
+                ))
+
+                results["updated_notes"].append({
+                    "index": index,
+                    "crm_id": target["id"],
+                    "match_type": match_type,
+                })
+            else:
+                if sheet_row not in (None, ""):
+                    con.execute("""
+                        UPDATE client_payments
+                        SET google_sheet_row=?,
+                            google_sync_at=?,
+                            google_sync_source=?
+                        WHERE id=?
+                    """, (
+                        int(sheet_row),
+                        now(),
+                        "google_sheet_no_change",
+                        target["id"],
+                    ))
+
+                results["matched"].append({
+                    "index": index,
+                    "crm_id": target["id"],
+                    "match_type": match_type,
+                })
+
+        con.commit()
+
+    audit(
+        "accounts_google_sync",
+        (
+            f"notes={len(results['updated_notes'])} "
+            f"matched={len(results['matched'])} "
+            f"review={len(results['review_required'])} "
+            f"skipped={len(results['skipped'])}"
+        ),
+    )
+
+    return jsonify({
+        "ok": True,
+        "summary": {
+            "updated_notes": len(results["updated_notes"]),
+            "matched": len(results["matched"]),
+            "review_required": len(results["review_required"]),
+            "skipped": len(results["skipped"]),
+        },
+        "results": results,
+    })
+
+
+# === END FLAIR ACCOUNTS SYNC API V1 ===
+
+
 @app.get("/favicon.ico")
 def favicon():
     return send_from_directory(APP_DIR/"static"/"images", "flair-logo.png")
