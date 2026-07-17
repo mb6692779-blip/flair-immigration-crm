@@ -1,0 +1,564 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+  .fi-dashboard {
+    --navy: #12233f;
+    --navy-soft: #1b3155;
+    --blue: #285fa8;
+    --blue-soft: #eaf1fb;
+    --gold: #c5a25a;
+    --ink: #18243a;
+    --muted: #68758a;
+    --line: rgba(18, 35, 63, 0.10);
+    --white: #ffffff;
+    position: relative;
+    min-height: calc(100vh - 80px);
+    padding: 26px;
+    margin: -20px;
+    overflow: hidden;
+    color: var(--ink);
+    font-family: "Segoe UI", Inter, Arial, sans-serif;
+    background:
+      radial-gradient(circle at 12% 8%, rgba(40, 95, 168, 0.10), transparent 28%),
+      radial-gradient(circle at 88% 12%, rgba(197, 162, 90, 0.10), transparent 24%),
+      linear-gradient(135deg, #f6f8fc 0%, #eef3f9 52%, #f8f9fc 100%);
+  }
+
+  .fi-dashboard::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.34;
+    background-image:
+      linear-gradient(rgba(18,35,63,.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(18,35,63,.025) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .fi-shell {
+    position: relative;
+    z-index: 1;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+
+  .fi-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+    gap: 22px;
+    align-items: stretch;
+    margin-bottom: 22px;
+  }
+
+  .fi-welcome,
+  .fi-command,
+  .fi-stat-card,
+  .fi-panel,
+  .fi-action-card {
+    border: 1px solid rgba(255,255,255,.72);
+    box-shadow: 0 16px 42px rgba(18, 35, 63, 0.09);
+    backdrop-filter: blur(10px);
+  }
+
+  .fi-welcome {
+    position: relative;
+    overflow: hidden;
+    border-radius: 22px;
+    padding: 30px;
+    background:
+      linear-gradient(135deg, rgba(18,35,63,.98), rgba(27,49,85,.94)),
+      var(--navy);
+    color: var(--white);
+  }
+
+  .fi-welcome::after {
+    content: "";
+    position: absolute;
+    width: 240px;
+    height: 240px;
+    right: -95px;
+    top: -105px;
+    border-radius: 50%;
+    border: 34px solid rgba(197,162,90,.10);
+  }
+
+  .fi-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    color: #d9c28b;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .fi-welcome h1 {
+    margin: 0;
+    font-size: clamp(28px, 4vw, 44px);
+    line-height: 1.08;
+    font-weight: 700;
+    letter-spacing: -.025em;
+  }
+
+  .fi-welcome p {
+    max-width: 660px;
+    margin: 14px 0 0;
+    color: rgba(255,255,255,.74);
+    line-height: 1.65;
+    font-size: 15px;
+  }
+
+  .fi-command {
+    border-radius: 22px;
+    padding: 24px;
+    background: rgba(255,255,255,.88);
+  }
+
+  .fi-command h2 {
+    margin: 0 0 7px;
+    font-size: 18px;
+    color: var(--navy);
+    font-weight: 700;
+  }
+
+  .fi-command p {
+    margin: 0 0 17px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .fi-search {
+    display: grid;
+    gap: 10px;
+  }
+
+  .fi-search input {
+    width: 100%;
+    min-height: 48px;
+    padding: 0 15px;
+    border-radius: 12px;
+    border: 1px solid #d9e1ec;
+    background: #fbfcfe;
+    color: var(--ink);
+    outline: none;
+    transition: .2s ease;
+    font: inherit;
+  }
+
+  .fi-search input:focus {
+    border-color: rgba(40,95,168,.65);
+    box-shadow: 0 0 0 4px rgba(40,95,168,.10);
+    background: white;
+  }
+
+  .fi-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    min-height: 46px;
+    padding: 0 18px;
+    border: 0;
+    border-radius: 12px;
+    text-decoration: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+  }
+
+  .fi-btn:hover {
+    transform: translateY(-1px);
+  }
+
+  .fi-btn-primary {
+    color: white;
+    background: linear-gradient(135deg, #245891, #2d70bd);
+    box-shadow: 0 10px 20px rgba(40,95,168,.22);
+  }
+
+  .fi-btn-secondary {
+    color: var(--navy);
+    background: #eef3f9;
+    border: 1px solid #d7e0eb;
+  }
+
+  .fi-section-title {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 26px 0 12px;
+  }
+
+  .fi-section-title h2 {
+    margin: 0;
+    font-size: 20px;
+    color: var(--navy);
+    font-weight: 700;
+  }
+
+  .fi-section-title span {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .fi-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .fi-action-card {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    min-height: 86px;
+    padding: 16px;
+    border-radius: 17px;
+    color: inherit;
+    text-decoration: none;
+    background: rgba(255,255,255,.88);
+    transition: .2s ease;
+  }
+
+  .fi-action-card:hover {
+    transform: translateY(-3px);
+    border-color: rgba(40,95,168,.22);
+    box-shadow: 0 18px 36px rgba(18,35,63,.13);
+  }
+
+  .fi-action-icon {
+    display: grid;
+    place-items: center;
+    flex: 0 0 44px;
+    height: 44px;
+    border-radius: 13px;
+    color: var(--navy);
+    background: linear-gradient(135deg, #edf3fb, #f9fbfe);
+    border: 1px solid #dde6f1;
+    font-size: 20px;
+  }
+
+  .fi-action-copy strong {
+    display: block;
+    color: var(--navy);
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+
+  .fi-action-copy small {
+    display: block;
+    color: var(--muted);
+    line-height: 1.35;
+    font-size: 12px;
+  }
+
+  .fi-stats {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .fi-stat-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: 17px;
+    padding: 19px;
+    background: rgba(255,255,255,.88);
+  }
+
+  .fi-stat-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 4px;
+    background: linear-gradient(180deg, var(--blue), var(--gold));
+  }
+
+  .fi-stat-card span {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 9px;
+  }
+
+  .fi-stat-card b {
+    display: block;
+    color: var(--navy);
+    font-size: 27px;
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: -.03em;
+  }
+
+  .fi-panel {
+    margin-top: 22px;
+    padding: 22px;
+    border-radius: 20px;
+    background: rgba(255,255,255,.92);
+  }
+
+  .fi-panel h2 {
+    margin: 0 0 17px;
+    color: var(--navy);
+    font-size: 22px;
+  }
+
+  .fi-panel h3 {
+    margin: 25px 0 11px;
+    color: var(--navy);
+    font-size: 16px;
+  }
+
+  .fi-table-wrap {
+    overflow-x: auto;
+    border: 1px solid #e3e9f1;
+    border-radius: 14px;
+  }
+
+  .fi-panel table {
+    width: 100%;
+    min-width: 1050px;
+    border-collapse: collapse;
+    background: white;
+    font-size: 12px;
+  }
+
+  .fi-panel th,
+  .fi-panel td {
+    padding: 11px 12px;
+    border-bottom: 1px solid #edf0f5;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .fi-panel th {
+    color: var(--navy);
+    background: #f2f6fb;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .fi-panel tr:hover td {
+    background: #fbfcfe;
+  }
+
+  .fi-footer-action {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+
+  @media (max-width: 1100px) {
+    .fi-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .fi-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
+  @media (max-width: 760px) {
+    .fi-dashboard { padding: 16px; margin: -12px; }
+    .fi-hero { grid-template-columns: 1fr; }
+    .fi-actions, .fi-stats { grid-template-columns: 1fr; }
+    .fi-welcome, .fi-command, .fi-panel { border-radius: 16px; }
+  }
+</style>
+
+<div class="fi-dashboard">
+  <div class="fi-shell">
+
+    <section class="fi-hero">
+      <div class="fi-welcome">
+        <div class="fi-kicker">Flair Jarvis CRM</div>
+        <h1>Operations Dashboard</h1>
+        <p>
+          Manage clients, leads, visa processing, payments and approvals from one
+          centralized workspace connected to the live PostgreSQL server.
+        </p>
+      </div>
+
+      <div class="fi-command">
+        <h2>Client Command Search</h2>
+        <p>Search a client to view processing, payments and partner-share status.</p>
+        <form method="get" class="fi-search">
+          <input name="q" value="{{ q }}" placeholder="Search client name, e.g. Rizwan Sharif">
+          <button class="fi-btn fi-btn-primary" type="submit">Run Search</button>
+        </form>
+      </div>
+    </section>
+
+    <div class="fi-section-title">
+      <div>
+        <h2>Quick Access</h2>
+        <span>Frequently used CRM modules</span>
+      </div>
+    </div>
+
+    <section class="fi-actions">
+      <a class="fi-action-card" href="{{ url_for('leads_page') }}">
+        <div class="fi-action-icon">◎</div>
+        <div class="fi-action-copy">
+          <strong>Lead Management</strong>
+          <small>Add, follow up and convert leads into clients.</small>
+        </div>
+      </a>
+
+      <a class="fi-action-card" href="{{ url_for('add_client') }}">
+        <div class="fi-action-icon">＋</div>
+        <div class="fi-action-copy">
+          <strong>Add New Client</strong>
+          <small>Create client and initial processing record.</small>
+        </div>
+      </a>
+
+      <a class="fi-action-card" href="{{ url_for('processing_sheet') }}">
+        <div class="fi-action-icon">▦</div>
+        <div class="fi-action-copy">
+          <strong>Visa Processing</strong>
+          <small>Review and update the full processing workflow.</small>
+        </div>
+      </a>
+
+      <a class="fi-action-card" href="{{ url_for('new_payment') }}">
+        <div class="fi-action-icon">₨</div>
+        <div class="fi-action-copy">
+          <strong>Payments</strong>
+          <small>Add payments and review management approvals.</small>
+        </div>
+      </a>
+
+      <a class="fi-action-card" href="{{ url_for('payments_sheet') }}">
+        <div class="fi-action-icon">◫</div>
+        <div class="fi-action-copy">
+          <strong>Accounts Sheets</strong>
+          <small>Client, FS Lisbon, lawyer and partner records.</small>
+        </div>
+      </a>
+
+      <a class="fi-action-card" href="{{ url_for('client_master') }}">
+        <div class="fi-action-icon">◇</div>
+        <div class="fi-action-copy">
+          <strong>Client Master</strong>
+          <small>View the central client register.</small>
+        </div>
+      </a>
+
+      <a class="fi-action-card" href="{{ url_for('payment_history') }}">
+        <div class="fi-action-icon">↺</div>
+        <div class="fi-action-copy">
+          <strong>Payment History</strong>
+          <small>Review previous payment updates.</small>
+        </div>
+      </a>
+
+      <a class="fi-action-card" href="{{ url_for('backups_page') }}">
+        <div class="fi-action-icon">⬡</div>
+        <div class="fi-action-copy">
+          <strong>Backups</strong>
+          <small>Review and download available backup files.</small>
+        </div>
+      </a>
+    </section>
+
+    <div class="fi-section-title">
+      <div>
+        <h2>Business Overview</h2>
+        <span>Live operational totals</span>
+      </div>
+    </div>
+
+    <section class="fi-stats">
+      <div class="fi-stat-card"><span>Total Clients</span><b>{{ cards.total_clients }}</b></div>
+      <div class="fi-stat-card"><span>Client Payments</span><b>{{ cards.client_payments }}</b></div>
+      <div class="fi-stat-card"><span>FS Lisbon</span><b>{{ cards.fs }}</b></div>
+      <div class="fi-stat-card"><span>Lawyer</span><b>{{ cards.lawyer }}</b></div>
+      <div class="fi-stat-card"><span>Pending Approvals</span><b>{{ cards.pending_approvals }}</b></div>
+    </section>
+
+    {% if summary %}
+    <section class="fi-panel">
+      <h2>{{ q|title }} — Full Client Report</h2>
+
+      <section class="fi-stats">
+        <div class="fi-stat-card"><span>Total Deal</span><b>{{ summary.total_eur }} EUR</b></div>
+        <div class="fi-stat-card"><span>Received So Far</span><b>{{ summary.received_eur }} EUR</b></div>
+        <div class="fi-stat-card"><span>Pending</span><b>{{ summary.balance_eur }} EUR</b></div>
+        <div class="fi-stat-card"><span>Status</span><b style="font-size:18px">{{ summary.current_stage }}</b></div>
+      </section>
+
+      <h3>Visa Processing</h3>
+      <div class="fi-table-wrap">
+        <table>
+          <tr>
+            <th>Client</th><th>Program</th><th>NIF</th><th>Personal Bank</th>
+            <th>Company Name</th><th>Company Formation</th><th>Company Bank</th>
+            <th>Business Plan</th><th>Funds Transfer</th><th>Application</th>
+            <th>Decision</th><th>Status</th><th>Delay</th><th>Remarks</th>
+          </tr>
+          {% for r in summary.processing %}
+          <tr>
+            <td>{{ r.client_name }}</td><td>{{ r.program }}</td><td>{{ r.nif }}</td>
+            <td>{{ r.personal_bank_account }}</td><td>{{ r.company_name }}</td>
+            <td>{{ r.company_formation }}</td><td>{{ r.company_bank_account }}</td>
+            <td>{{ r.business_plan }}</td><td>{{ r.funds_transfer }}</td>
+            <td>{{ r.application_submission }}</td><td>{{ r.decision }}</td>
+            <td>{{ r.status }}</td><td>{{ r.delay }}</td><td>{{ r.remarks }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+
+      <h3>Client Payments</h3>
+      <div class="fi-table-wrap">
+        <table>
+          <tr>
+            <th>Visa</th><th>INV</th><th>Total EUR</th><th>Stage 1</th>
+            <th>Stage 2</th><th>Stage 3</th><th>Received PKR</th><th>%</th>
+            <th>Balance PKR</th><th>Balance EUR</th><th>Stage</th>
+          </tr>
+          {% for r in summary.payments %}
+          <tr>
+            <td>{{ r.visa }}</td><td>{{ r.inv }}</td><td>{{ r.total_eur }}</td>
+            <td>{{ r.stage1_eur }}</td><td>{{ r.stage2_eur }}</td><td>{{ r.stage3_eur }}</td>
+            <td>{{ r.received_pkr }}</td><td>{{ r.received_percent }}%</td>
+            <td>{{ r.balance_pkr }}</td><td>{{ r.balance_eur }}</td><td>{{ r.payment_stage }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+
+      <h3>Share Status</h3>
+      <div class="fi-table-wrap">
+        <table>
+          <tr>
+            <th>Share Type</th><th>Client</th><th>Total EUR</th><th>Paid PKR</th>
+            <th>%</th><th>Balance EUR</th><th>Balance PKR</th><th>Status</th>
+          </tr>
+          {% for r in summary.shares %}
+          <tr>
+            <td>{{ r.share_type }}</td><td>{{ r.client_name }}</td>
+            <td>{{ r.total_eur }}</td><td>{{ r.paid_pkr }}</td>
+            <td>{{ r.paid_percent }}%</td><td>{{ r.balance_eur }}</td>
+            <td>{{ r.balance_pkr }}</td><td>{{ r.status }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
+    <div class="fi-footer-action">
+      <form method="post" action="{{ url_for('backup') }}">
+        <button class="fi-btn fi-btn-secondary" type="submit">Download Backup</button>
+      </form>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
