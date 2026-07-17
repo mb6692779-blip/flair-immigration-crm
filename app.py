@@ -1276,6 +1276,288 @@ def convert_lead_to_client(lead_id):
 # === END FLAIR LEAD MANAGEMENT V1 ===
 
 
+
+# === FLAIR PROCESSING SYNC API V1 ===
+
+def ensure_processing_sync_columns():
+    with db() as con:
+        if IS_POSTGRES:
+            rows = con.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='processing_sheet'
+            """).fetchall()
+            existing = {row["column_name"] for row in rows}
+        else:
+            rows = con.execute("PRAGMA table_info(processing_sheet)").fetchall()
+            existing = {row["name"] for row in rows}
+
+        required = {
+            "google_sheet_row": "INTEGER",
+            "google_sync_at": "TEXT",
+            "google_sync_source": "TEXT",
+        }
+
+        for column, column_type in required.items():
+            if column not in existing:
+                con.execute(f"ALTER TABLE processing_sheet ADD COLUMN {column} {column_type}")
+        con.commit()
+
+
+def sync_api_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        expected = os.environ.get("GOOGLE_SYNC_KEY", "").strip()
+        provided = request.headers.get("X-Flair-Sync-Key", "").strip()
+
+        if not expected:
+            return jsonify({
+                "ok": False,
+                "error": "GOOGLE_SYNC_KEY is not configured on Railway"
+            }), 503
+
+        if not provided or provided != expected:
+            return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+PROCESSING_SYNC_FIELDS = [
+    "client_name", "program", "processing_start_date", "nif",
+    "personal_bank_account", "company_name", "company_formation",
+    "company_bank_account", "business_plan", "personal_funds_transferred",
+    "application_ready", "funds_transfer", "application_submission",
+    "decision", "status", "delay", "remarks",
+]
+
+
+def normalize_sync_text(value):
+    return " ".join(str(value or "").strip().lower().split())
+
+
+@app.get("/api/sync/processing/health")
+@sync_api_required
+def processing_sync_health():
+    ensure_processing_sync_columns()
+    return jsonify({
+        "ok": True,
+        "service": "Flair Processing Sync API",
+        "database_backend": "postgres" if IS_POSTGRES else "sqlite",
+    })
+
+
+@app.get("/api/sync/processing/export")
+@sync_api_required
+def processing_sync_export():
+    ensure_processing_sync_columns()
+    with db() as con:
+        rows = con.execute(
+            "SELECT * FROM processing_sheet ORDER BY id"
+        ).fetchall()
+
+    exported = []
+    for row in rows:
+        item = {"crm_id": row["id"]}
+        for field in PROCESSING_SYNC_FIELDS:
+            item[field] = row[field]
+        item["crm_updated_at"] = row["updated_at"]
+        item["google_sheet_row"] = row["google_sheet_row"]
+        exported.append(item)
+
+    return jsonify({"ok": True, "count": len(exported), "rows": exported})
+
+
+@app.post("/api/sync/processing/import")
+@sync_api_required
+def processing_sync_import():
+    ensure_processing_sync_columns()
+    payload = request.get_json(silent=True) or {}
+    incoming_rows = payload.get("rows")
+
+    if not isinstance(incoming_rows, list):
+        return jsonify({
+            "ok": False,
+            "error": "JSON body must contain a rows list"
+        }), 400
+
+    results = {
+        "updated": [],
+        "matched": [],
+        "review_required": [],
+        "skipped": [],
+    }
+
+    with db() as con:
+        for index, incoming in enumerate(incoming_rows, start=1):
+            if not isinstance(incoming, dict):
+                results["skipped"].append({
+                    "index": index,
+                    "reason": "Row is not an object",
+                })
+                continue
+
+            crm_id = incoming.get("crm_id")
+            sheet_row = incoming.get("sheet_row")
+            target = None
+            match_type = None
+
+            if crm_id not in (None, ""):
+                try:
+                    target = con.execute(
+                        "SELECT * FROM processing_sheet WHERE id=?",
+                        (int(crm_id),),
+                    ).fetchone()
+                    if target:
+                        match_type = "crm_id"
+                except (TypeError, ValueError):
+                    target = None
+
+            if not target:
+                client_key = normalize_sync_text(incoming.get("client_name"))
+                program_key = normalize_sync_text(incoming.get("program"))
+
+                if not client_key:
+                    results["review_required"].append({
+                        "index": index,
+                        "reason": "Missing client_name and no valid crm_id",
+                    })
+                    continue
+
+                candidates = con.execute("""
+                    SELECT * FROM processing_sheet
+                    WHERE lower(trim(client_name))=?
+                    ORDER BY id
+                """, (client_key,)).fetchall()
+
+                if program_key:
+                    candidates = [
+                        row for row in candidates
+                        if normalize_sync_text(row["program"]) == program_key
+                    ]
+
+                if len(candidates) == 1:
+                    target = candidates[0]
+                    match_type = "exact_name_program"
+                elif len(candidates) > 1:
+                    results["review_required"].append({
+                        "index": index,
+                        "client_name": incoming.get("client_name"),
+                        "program": incoming.get("program"),
+                        "reason": "Multiple CRM records matched",
+                        "candidate_ids": [row["id"] for row in candidates],
+                    })
+                    continue
+                else:
+                    results["review_required"].append({
+                        "index": index,
+                        "client_name": incoming.get("client_name"),
+                        "program": incoming.get("program"),
+                        "reason": "No CRM record matched; automatic creation is disabled",
+                    })
+                    continue
+
+            sheet_known_crm_updated_at = str(
+                incoming.get("crm_updated_at") or ""
+            ).strip()
+            current_crm_updated_at = str(target["updated_at"] or "").strip()
+
+            if (
+                sheet_known_crm_updated_at
+                and current_crm_updated_at
+                and sheet_known_crm_updated_at != current_crm_updated_at
+            ):
+                results["review_required"].append({
+                    "index": index,
+                    "crm_id": target["id"],
+                    "reason": "CRM record changed after the sheet was last synchronized",
+                    "crm_updated_at": current_crm_updated_at,
+                    "sheet_known_crm_updated_at": sheet_known_crm_updated_at,
+                })
+                continue
+
+            values = []
+            changed_fields = []
+
+            for field in PROCESSING_SYNC_FIELDS:
+                if field in incoming:
+                    new_value = incoming.get(field)
+                    values.append(new_value)
+                    if str(target[field] or "") != str(new_value or ""):
+                        changed_fields.append(field)
+                else:
+                    values.append(target[field])
+
+            if not changed_fields:
+                if sheet_row not in (None, ""):
+                    con.execute("""
+                        UPDATE processing_sheet
+                        SET google_sheet_row=?, google_sync_at=?, google_sync_source=?
+                        WHERE id=?
+                    """, (
+                        int(sheet_row), now(), "google_sheet_no_change", target["id"]
+                    ))
+
+                results["matched"].append({
+                    "index": index,
+                    "crm_id": target["id"],
+                    "match_type": match_type,
+                    "changed_fields": [],
+                })
+                continue
+
+            set_sql = ",".join(f"{field}=?" for field in PROCESSING_SYNC_FIELDS)
+            con.execute(
+                f"""
+                UPDATE processing_sheet
+                SET {set_sql},
+                    google_sheet_row=?,
+                    google_sync_at=?,
+                    google_sync_source=?,
+                    updated_by=?,
+                    updated_at=?
+                WHERE id=?
+                """,
+                values + [
+                    int(sheet_row) if sheet_row not in (None, "") else None,
+                    now(), "google_sheet", "google_sheets_sync", now(), target["id"],
+                ],
+            )
+
+            results["updated"].append({
+                "index": index,
+                "crm_id": target["id"],
+                "match_type": match_type,
+                "changed_fields": changed_fields,
+            })
+
+        con.commit()
+
+    audit(
+        "processing_google_sync",
+        (
+            f"updated={len(results['updated'])} "
+            f"matched={len(results['matched'])} "
+            f"review={len(results['review_required'])} "
+            f"skipped={len(results['skipped'])}"
+        ),
+    )
+
+    return jsonify({
+        "ok": True,
+        "summary": {
+            "updated": len(results["updated"]),
+            "matched": len(results["matched"]),
+            "review_required": len(results["review_required"]),
+            "skipped": len(results["skipped"]),
+        },
+        "results": results,
+    })
+
+
+# === END FLAIR PROCESSING SYNC API V1 ===
+
+
 @app.get("/favicon.ico")
 def favicon():
     return send_from_directory(APP_DIR/"static"/"images", "flair-logo.png")
