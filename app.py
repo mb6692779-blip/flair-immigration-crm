@@ -224,6 +224,26 @@ def init_db():
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS payment_deletion_requests(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_update_id INTEGER NOT NULL,
+            client_payment_id INTEGER NOT NULL,
+            payment_date TEXT,
+            stage TEXT,
+            received_eur REAL DEFAULT 0,
+            roe REAL DEFAULT 0,
+            received_pkr REAL DEFAULT 0,
+            payment_remarks TEXT,
+            reason TEXT NOT NULL,
+            requested_by TEXT NOT NULL,
+            status TEXT DEFAULT 'Pending',
+            management_note TEXT,
+            decided_by TEXT,
+            decided_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(client_payment_id) REFERENCES client_payments(id)
+        );
+
         CREATE TABLE IF NOT EXISTS share_payments(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             share_type TEXT,
@@ -542,7 +562,9 @@ def dashboard():
     q = request.args.get("q", "").strip()
     summary = get_client_summary(q) if q else None
     with db() as con:
-        pending_approvals = con.execute("SELECT COUNT(*) c FROM payment_approval_requests WHERE status='Pending'").fetchone()["c"] if table_exists(con, "payment_approval_requests") else 0
+        payment_pending = con.execute("SELECT COUNT(*) c FROM payment_approval_requests WHERE status='Pending'").fetchone()["c"] if table_exists(con, "payment_approval_requests") else 0
+        deletion_pending = con.execute("SELECT COUNT(*) c FROM payment_deletion_requests WHERE status='Pending'").fetchone()["c"] if table_exists(con, "payment_deletion_requests") else 0
+        pending_approvals = payment_pending + deletion_pending
     cards = {"total_clients": 34, "client_payments": 25, "fs": 26, "lawyer": 26, "pending_approvals": pending_approvals}
     return render_template("dashboard.html", q=q, summary=summary, cards=cards)
 
@@ -678,6 +700,208 @@ def allowed_share_stage(share_type,total,paid_eur):
 
 
 
+
+# === PAYMENT DELETION APPROVAL WORKFLOW V1 ===
+
+def ensure_payment_deletion_requests_table():
+    with db() as con:
+        schema = """
+        CREATE TABLE IF NOT EXISTS payment_deletion_requests(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_update_id INTEGER NOT NULL,
+            client_payment_id INTEGER NOT NULL,
+            payment_date TEXT,
+            stage TEXT,
+            received_eur REAL DEFAULT 0,
+            roe REAL DEFAULT 0,
+            received_pkr REAL DEFAULT 0,
+            payment_remarks TEXT,
+            reason TEXT NOT NULL,
+            requested_by TEXT NOT NULL,
+            status TEXT DEFAULT 'Pending',
+            management_note TEXT,
+            decided_by TEXT,
+            decided_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(client_payment_id) REFERENCES client_payments(id)
+        );
+        """
+        if IS_POSTGRES:
+            schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        con.executescript(schema)
+        con.commit()
+
+
+def recalculate_client_payment(con, client_payment_id):
+    base = con.execute(
+        "SELECT * FROM client_payments WHERE id=?",
+        (client_payment_id,),
+    ).fetchone()
+    if not base:
+        raise ValueError("Payment account not found.")
+
+    updates = con.execute(
+        "SELECT * FROM payment_updates WHERE client_payment_id=? ORDER BY id",
+        (client_payment_id,),
+    ).fetchall()
+
+    stage_totals = {
+        "Stage 1 - 70%": 0.0,
+        "Stage 2 - 15%": 0.0,
+        "Stage 3 - 15%": 0.0,
+    }
+    stage_rates = {
+        "Stage 1 - 70%": 0.0,
+        "Stage 2 - 15%": 0.0,
+        "Stage 3 - 15%": 0.0,
+    }
+    received_pkr = 0.0
+
+    for update in updates:
+        stage = update["stage"]
+        if stage in stage_totals:
+            stage_totals[stage] += safe_float(update["received_eur"])
+            stage_rates[stage] = safe_float(update["roe"])
+        received_pkr += safe_float(update["received_pkr"])
+
+    total_eur = safe_float(base["total_eur"])
+    invoice_pkr = safe_float(base["invoice_pkr"])
+    received_eur = sum(stage_totals.values())
+    balance_eur = max(total_eur - received_eur, 0)
+    balance_pkr = max(invoice_pkr - received_pkr, 0)
+    received_percent = (received_eur / total_eur * 100) if total_eur else 0
+
+    temp_row = dict(base)
+    temp_row.update({
+        "stage1_eur": stage_totals["Stage 1 - 70%"],
+        "stage2_eur": stage_totals["Stage 2 - 15%"],
+        "stage3_eur": stage_totals["Stage 3 - 15%"],
+        "balance_eur": balance_eur,
+    })
+    next_stage = next_stage_from_existing(temp_row)
+    payment_stage = "Complete" if next_stage == "Complete" else next_stage.replace(" - ", " Pending ")
+
+    con.execute("""
+        UPDATE client_payments
+        SET stage1_eur=?, stage1_roe=?, stage2_eur=?, stage2_roe=?,
+            stage3_eur=?, stage3_roe=?, received_pkr=?, received_percent=?,
+            balance_pkr=?, balance_eur=?, payment_stage=?, updated_by=?, updated_at=?
+        WHERE id=?
+    """, (
+        stage_totals["Stage 1 - 70%"], stage_rates["Stage 1 - 70%"],
+        stage_totals["Stage 2 - 15%"], stage_rates["Stage 2 - 15%"],
+        stage_totals["Stage 3 - 15%"], stage_rates["Stage 3 - 15%"],
+        received_pkr, received_percent, balance_pkr, balance_eur,
+        payment_stage, session.get("username", "system"), now(), client_payment_id,
+    ))
+
+
+@app.post("/payment-update/<int:update_id>/delete-request")
+@login_required
+@accounts_or_management
+def request_payment_deletion(update_id):
+    ensure_payment_deletion_requests_table()
+    reason = request.form.get("reason", "").strip()
+    if not reason:
+        flash("A deletion reason is required.")
+        return redirect(url_for("new_payment"))
+
+    with db() as con:
+        update = con.execute("""
+            SELECT u.*, p.client_name, p.inv
+            FROM payment_updates u
+            JOIN client_payments p ON p.id=u.client_payment_id
+            WHERE u.id=?
+        """, (update_id,)).fetchone()
+        if not update:
+            flash("Payment history record not found.")
+            return redirect(url_for("new_payment"))
+
+        pending = con.execute("""
+            SELECT id FROM payment_deletion_requests
+            WHERE payment_update_id=? AND status='Pending'
+        """, (update_id,)).fetchone()
+        if pending:
+            flash("A deletion request for this payment is already pending.")
+            return redirect(url_for("new_payment"))
+
+        requested_by = session.get("name") or session.get("username")
+        con.execute("""
+            INSERT INTO payment_deletion_requests(
+                payment_update_id,client_payment_id,payment_date,stage,
+                received_eur,roe,received_pkr,payment_remarks,
+                reason,requested_by,status,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            update_id, update["client_payment_id"], update["payment_date"],
+            update["stage"], update["received_eur"], update["roe"],
+            update["received_pkr"], update["remarks"], reason,
+            requested_by, "Pending", now(),
+        ))
+        con.commit()
+
+    audit(
+        "payment_deletion_requested",
+        f"{update['client_name']} | {update['stage']} | {update['received_eur']} EUR | Reason: {reason} | Requested by: {requested_by}",
+    )
+    flash("The deletion request has been sent to management for approval.")
+    return redirect(url_for("new_payment"))
+
+
+@app.post("/payment-deletion-request/<int:req_id>/<decision>")
+@login_required
+@management_required
+def decide_payment_deletion_request(req_id, decision):
+    ensure_payment_deletion_requests_table()
+    if decision not in {"approve", "reject"}:
+        flash("Invalid decision.")
+        return redirect(url_for("new_payment"))
+
+    management_note = request.form.get("management_note", "").strip()
+
+    with db() as con:
+        deletion_request = con.execute("""
+            SELECT d.*, p.client_name, p.inv
+            FROM payment_deletion_requests d
+            JOIN client_payments p ON p.id=d.client_payment_id
+            WHERE d.id=?
+        """, (req_id,)).fetchone()
+
+        if not deletion_request or deletion_request["status"] != "Pending":
+            flash("Deletion request not found or already decided.")
+            return redirect(url_for("new_payment"))
+
+        if decision == "approve":
+            con.execute(
+                "DELETE FROM payment_updates WHERE id=?",
+                (deletion_request["payment_update_id"],),
+            )
+            recalculate_client_payment(con, deletion_request["client_payment_id"])
+            status = "Approved"
+        else:
+            status = "Rejected"
+
+        con.execute("""
+            UPDATE payment_deletion_requests
+            SET status=?, management_note=?, decided_by=?, decided_at=?
+            WHERE id=?
+        """, (
+            status, management_note, session.get("username"), now(), req_id,
+        ))
+        con.commit()
+
+    action = "payment_deletion_approved" if status == "Approved" else "payment_deletion_rejected"
+    audit(
+        action,
+        f"{deletion_request['client_name']} | {deletion_request['stage']} | "
+        f"{deletion_request['received_eur']} EUR | Reason: {deletion_request['reason']} | "
+        f"Decision note: {management_note or 'None'}",
+    )
+    flash(f"Payment deletion request {status.lower()}.")
+    return redirect(url_for("new_payment"))
+
+# === END PAYMENT DELETION APPROVAL WORKFLOW V1 ===
+
 @app.route("/new-payment", methods=["GET","POST"])
 @login_required
 @accounts_or_management
@@ -695,7 +919,7 @@ def new_payment():
         with db() as con:
             base = con.execute("SELECT * FROM client_payments WHERE id=?", (cp_id,)).fetchone()
             if not base:
-                flash("Existing payment account select karo.")
+                flash("Please select an existing payment account.")
                 return redirect(url_for("new_payment"))
 
             ok, msg, allowed, max_allowed = validate_payment_request(base, stage, amount_eur)
@@ -704,7 +928,7 @@ def new_payment():
                 return redirect(url_for("new_payment"))
 
             if roe <= 0:
-                flash("Payment ROE required hai.")
+                flash("A valid payment exchange rate is required.")
                 return redirect(url_for("new_payment"))
 
             if session.get("role") == "accounts":
@@ -720,7 +944,7 @@ def new_payment():
                 ))
                 con.commit()
                 audit("payment_request_sent", f"{base['client_name']} | {stage} | {amount_eur} EUR | {updated_by}")
-                flash("Payment request management approval ke liye send ho gai.")
+                flash("The payment request has been sent to management for approval.")
                 return redirect(url_for("new_payment"))
 
             apply_payment_update(con, cp_id, d.get("payment_date"), stage, amount_eur, roe, amount_pkr, updated_by, remarks)
@@ -732,11 +956,36 @@ def new_payment():
     with db() as con:
         accounts = con.execute("SELECT * FROM client_payments ORDER BY id").fetchall()
         clients = con.execute("SELECT main_investor, visa_type FROM clients ORDER BY main_investor").fetchall()
+        ensure_payment_deletion_requests_table()
         history = con.execute("""
-            SELECT u.*, p.client_name
+            SELECT u.*, p.client_name, p.inv,
+                   d.id AS deletion_request_id,
+                   d.status AS deletion_status,
+                   d.reason AS deletion_reason
             FROM payment_updates u
             JOIN client_payments p ON p.id = u.client_payment_id
+            LEFT JOIN payment_deletion_requests d
+              ON d.payment_update_id=u.id
+             AND d.id=(
+                SELECT MAX(d2.id) FROM payment_deletion_requests d2
+                WHERE d2.payment_update_id=u.id
+             )
             ORDER BY u.id DESC
+            LIMIT 100
+        """).fetchall()
+        pending_deletion_requests = con.execute("""
+            SELECT d.*, p.client_name, p.visa, p.inv
+            FROM payment_deletion_requests d
+            JOIN client_payments p ON p.id=d.client_payment_id
+            WHERE d.status='Pending'
+            ORDER BY d.id DESC
+        """).fetchall() if session.get("role") in ["management", "server"] else []
+        deletion_history = con.execute("""
+            SELECT d.*, p.client_name, p.visa, p.inv
+            FROM payment_deletion_requests d
+            JOIN client_payments p ON p.id=d.client_payment_id
+            WHERE d.status!='Pending'
+            ORDER BY d.id DESC
             LIMIT 100
         """).fetchall()
         pending_requests = con.execute("""
@@ -784,7 +1033,9 @@ def new_payment():
         clients=clients,
         history=history,
         payment_data=payment_data,
-        pending_requests=pending_requests
+        pending_requests=pending_requests,
+        pending_deletion_requests=pending_deletion_requests,
+        deletion_history=deletion_history
     )
 
 def apply_payment_update(con, cp_id, payment_date, stage, amount_eur, roe, amount_pkr, updated_by, remarks):
@@ -877,7 +1128,7 @@ def decide_payment_request(req_id, decision):
                     WHERE id=?
                 """, (f"Auto rejected: {msg}", session.get("username"), now(), req_id))
                 con.commit()
-                flash(f"Request auto rejected: {msg}")
+                flash(f"Request automatically rejected: {msg}")
                 return redirect(url_for("new_payment"))
 
             apply_payment_update(
@@ -892,11 +1143,12 @@ def decide_payment_request(req_id, decision):
                 req["remarks"]
             )
             status = "Approved"
-            audit("payment_request_approved", f"{base['client_name']} | {req['stage']} | {req['received_eur']} EUR")
+            audit_action = "payment_request_approved"
         else:
             status = "Rejected"
-            audit("payment_request_rejected", f"{base['client_name']} | {req['stage']} | {req['received_eur']} EUR")
+            audit_action = "payment_request_rejected"
 
+        audit_details = f"{base['client_name']} | {req['stage']} | {req['received_eur']} EUR"
         con.execute("""
             UPDATE payment_approval_requests
             SET status=?, management_note=?, decided_by=?, decided_at=?
@@ -904,6 +1156,7 @@ def decide_payment_request(req_id, decision):
         """, (status, note, session.get("username"), now(), req_id))
         con.commit()
 
+    audit(audit_action, audit_details)
     flash(f"Payment request {status.lower()}.")
     return redirect(url_for("new_payment"))
 
@@ -930,10 +1183,10 @@ def transfer_shares():
             base_check = con.execute("SELECT * FROM share_payments WHERE id=?", (sp_id,)).fetchone()
             allowed = allowed_share_stage(base_check["share_type"], base_check["total_eur"], (base_check["total_eur"] or 0) - (base_check["balance_eur"] or 0))
             if allowed != "Complete" and d.get("stage") != allowed:
-                flash(f"Stage locked. Pehle {allowed} complete karo.")
+                flash(f"Stage locked. Complete {allowed} first.")
                 return redirect(url_for("transfer_shares"))
             if allowed == "Complete":
-                flash("Share payment already complete.")
+                flash("This share payment is already complete.")
                 return redirect(url_for("transfer_shares"))
             con.execute("""INSERT INTO share_updates(share_payment_id,transfer_date,stage,transfer_eur,roe,transfer_pkr,updated_by,remarks,created_at)
             VALUES(?,?,?,?,?,?,?,?,?)""", (sp_id, d.get("transfer_date"), d.get("stage"), transfer_eur, roe, transfer_pkr, d.get("updated_by"), d.get("remarks"), now()))
@@ -958,6 +1211,10 @@ def transfer_shares():
 @login_required
 def processing_sheet():
     if request.method == "POST":
+        if session.get("role") not in ["management", "server"]:
+            flash("Visa processing records are read-only for Accounts users.")
+            return redirect(url_for("processing_sheet"))
+
         d = request.form
         row_id = d.get("id")
         fields = ["nif","personal_bank_account","company_name","company_formation","company_bank_account","business_plan","personal_funds_transferred","application_ready","funds_transfer","application_submission","decision","status","delay","remarks"]
@@ -967,7 +1224,9 @@ def processing_sheet():
             con.execute(f"UPDATE processing_sheet SET {sets} WHERE id=?", vals)
             con.commit()
         audit("processing_updated", row_id)
+        flash("Visa processing record updated successfully.")
         return redirect(url_for("processing_sheet"))
+
     with db() as con:
         rows = con.execute("SELECT * FROM processing_sheet ORDER BY id").fetchall()
     return render_template("processing_sheet.html", rows=rows)
@@ -1064,7 +1323,7 @@ def backup():
     sqlite_backup = backup_database_file("manual")
     data = {}
     with db() as con:
-        for t in ["clients","processing_sheet","client_payments","share_payments","payment_updates","share_updates","payment_approval_requests","audit_log"]:
+        for t in ["clients","processing_sheet","client_payments","share_payments","payment_updates","share_updates","payment_approval_requests","payment_deletion_requests","audit_log"]:
             if table_exists(con, t):
                 data[t] = [dict(r) for r in con.execute(f"SELECT * FROM {t}").fetchall()]
     path = BACKUP_DIR / f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -1358,6 +1617,9 @@ def create_notification_from_audit(action, details):
         "payment_added_direct": ("Accounts", "Payment updated"),
         "payment_request_approved": ("Accounts", "Payment request approved"),
         "payment_request_rejected": ("Accounts", "Payment request rejected"),
+        "payment_deletion_requested": ("Accounts", "Payment deletion approval requested"),
+        "payment_deletion_approved": ("Accounts", "Payment deletion approved"),
+        "payment_deletion_rejected": ("Accounts", "Payment deletion rejected"),
         "share_transfer": ("Accounts", "Share transfer updated"),
         "lead_added": ("Lead", "New lead added"),
         "lead_updated": ("Lead", "Lead updated"),

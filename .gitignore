@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Local databases and runtime files
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
+
+# Local backups and generated exports
+backups/
+*.zip
+
+# One-time installer and repair scripts
+install_*.py
+fix_*.py
+apply_*_fix.py
+
+# Local migration helpers and notes
+POSTGRES_MIGRATION_STEPS.md
+DEPLOYMENT_UPDATE_*.txt
+
+# Seed/import runtime markers only — keep JSON seed files
+seed_data/.imported
+seed_data/.preloaded_exact_restored_*
+
+# Temporary or broken template copies
+templates/*Broken*.html
+templates/*broken*.html
+templates/* old.html
+templates/*_old.html
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
