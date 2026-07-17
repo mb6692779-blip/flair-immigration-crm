@@ -433,10 +433,14 @@ def restore_preloaded_exact_once(force=False):
     backup_database_file("before_exact_restore")
     data = json.loads(seed_file.read_text(encoding="utf-8"))
     with db() as con:
-        for table in ["clients", "processing_sheet", "client_payments", "share_payments", "payment_updates", "share_updates"]:
+        # Delete child tables before parent tables to respect PostgreSQL
+        # foreign-key constraints.
+        for table in ["payment_updates", "share_updates"]:
             con.execute(f"DELETE FROM {table}")
         if table_exists(con, "payment_approval_requests"):
             con.execute("DELETE FROM payment_approval_requests")
+        for table in ["client_payments", "share_payments", "processing_sheet", "clients"]:
+            con.execute(f"DELETE FROM {table}")
         for r in data.get("clientMaster", {}).get("rows", []):
             con.execute("""INSERT INTO clients(date, main_investor, visa_type, section_type, group_size, partner_names, reference_type, reference_name, issue_status, issue_details, remarks, status, created_at, updated_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (r[0] if len(r)>0 else "", r[1] if len(r)>1 else "", r[2] if len(r)>2 else "", r[3] if len(r)>3 else "", int(r[4] or 1) if len(r)>4 else 1, r[5] if len(r)>5 else "", r[6] if len(r)>6 else "", r[7] if len(r)>7 else "", r[8] if len(r)>8 else "", r[9] if len(r)>9 else "", r[10] if len(r)>10 else "", "Active", now(), now()))
@@ -1577,9 +1581,16 @@ def health():
         "backups": len(list(BACKUP_DIR.glob("db_backup_*.sqlite")))
     })
 
+# === SAFE PRELOADED RESTORE GUARD V1 ===
 if __name__ == "__main__":
     init_db()
     import_seed_once()
-    restore_preloaded_exact_once()
+
+    # Never overwrite live PostgreSQL data automatically during a deployment.
+    # A preloaded restore can only run when explicitly enabled for a controlled
+    # maintenance operation.
+    if os.environ.get("RESTORE_PRELOADED_EXACT", "").strip().lower() in {"1", "true", "yes"}:
+        restore_preloaded_exact_once(force=True)
+
     port = int(os.environ.get("PORT", 5050))
     app.run(host="0.0.0.0", port=port, debug=False)
